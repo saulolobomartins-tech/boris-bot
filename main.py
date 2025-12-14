@@ -2,15 +2,11 @@ import os, re, datetime, asyncio
 from collections import defaultdict
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from dateutil.parser import parse as dateparse
 from telegram import Update
-from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler,
-    MessageHandler, ContextTypes, filters
-)
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from supabase import create_client, Client
 
-# ------------------ Config ------------------
+# --------- ENV ---------
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -20,11 +16,11 @@ if not (TOKEN and SUPABASE_URL and SUPABASE_KEY):
 
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --------- FASTAPI ---------
 app = FastAPI()
 
-# ------------------ Heurísticas ------------------
+# --------- HELPERS ---------
 def money_from_text(txt: str):
-    # Extrai primeiro valor monetário do texto (R$ 1.200,00 / 1200 / 1.200,00).
     s = txt.replace("R$", "").replace(" ", "")
     m = re.search(r"(\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})?", s)
     if not m:
@@ -66,16 +62,15 @@ def guess_cc(txt: str):
         return "SEDE"
     return None
 
-def get_or_none(res):
-    # Helper para maybe_single do supabase-py: retornos com .data
-    return res.data if hasattr(res, "data") else res
+def rows(res):
+    return getattr(res, "data", res)
 
-# ------------------ Comandos ------------------
+# --------- COMMANDS ---------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    # cria ou atualiza registro do usuário como inativo por padrão
-    exist = sb.table("users").select("*").eq("tg_user_id", u.id).execute()
-    data = get_or_none(exist)
+    # cria (ou garante) registro como inativo por padrão
+    got = sb.table("users").select("*").eq("tg_user_id", u.id).execute()
+    data = rows(got)
     if not data:
         sb.table("users").insert({
             "tg_user_id": u.id, "name": u.full_name, "role": "viewer", "is_active": False
@@ -87,26 +82,51 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Pede pro owner te autorizar com /autorizar {u.id} role=buyer"
     )
 
-async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_eu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    # verifica se quem chamou é owner
-    q = sb.table("users").select("role,is_active").eq("tg_user_id", u.id).execute()
-    you = get_or_none(q)
-    if not you or you[0]["role"] != "owner" or not you[0]["is_active"]:
-        await update.message.reply_text("Somente o owner pode autorizar usuários.")
+    me = rows(sb.table("users").select("role,is_active,name").eq("tg_user_id", u.id).execute())
+    if not me:
+        await update.message.reply_text("Não te encontrei na base. Usa /start primeiro.")
         return
+    await update.message.reply_text(f"Você: role={me[0]['role']}, ativo={me[0]['is_active']}")
 
-    if len(context.args) == 0:
-        await update.message.reply_text("Uso: /autorizar <tg_user_id> role=owner|partner|buyer|viewer")
-        return
-    target = int(context.args[0])
-    role = "buyer"
-    for a in context.args[1:]:
-        if a.startswith("role="):
-            role = a.split("=", 1)[1]
+async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        u = update.effective_user
+        you = rows(sb.table("users").select("role,is_active").eq("tg_user_id", u.id).execute())
+        if not you or you[0].get("role") != "owner" or not you[0].get("is_active"):
+            await update.message.reply_text("Somente o owner ativo pode autorizar usuários.")
+            return
 
-    sb.table("users").upsert({"tg_user_id": target, "role": role, "is_active": True, "name": ""}).execute()
-    await update.message.reply_text(f"Usuário {target} autorizado como {role} ✅")
+        if len(context.args) == 0:
+            await update.message.reply_text("Uso: /autorizar <tg_user_id> role=owner|partner|buyer|viewer")
+            return
+
+        target = int(context.args[0])
+        role = "buyer"
+        for a in context.args[1:]:
+            if a.startswith("role="):
+                role = a.split("=", 1)[1].strip() or "buyer"
+
+        # Tenta UPDATE primeiro
+        exist = rows(sb.table("users").select("id").eq("tg_user_id", target).execute())
+        if exist:
+            sb.table("users").update({"role": role, "is_active": True}).eq("tg_user_id", target).execute()
+        else:
+            # fallback: insert novo
+            sb.table("users").insert({"tg_user_id": target, "role": role, "is_active": True}).execute()
+
+        await update.message.reply_text(f"✅ Usuário {target} autorizado como {role}.")
+    except Exception as e:
+        # último recurso: tenta upsert com on_conflict
+        try:
+            sb.table("users").upsert(
+                {"tg_user_id": target, "role": role, "is_active": True},
+                on_conflict="tg_user_id"
+            ).execute()
+            await update.message.reply_text(f"✅ Usuário {target} autorizado como {role}.")
+        except Exception as e2:
+            await update.message.reply_text(f"⚠️ Erro ao autorizar: {e2}")
 
 def save_entry(tg_user_id: int, txt: str):
     amount = money_from_text(txt)
@@ -116,26 +136,20 @@ def save_entry(tg_user_id: int, txt: str):
     cat_name = guess_category(txt)
     cc_code = guess_cc(txt)
 
-    # usuário
-    u = sb.table("users").select("*").eq("tg_user_id", tg_user_id).execute()
-    ud = get_or_none(u)
-    if not ud or not ud[0]["is_active"]:
+    u = rows(sb.table("users").select("*").eq("tg_user_id", tg_user_id).execute())
+    if not u or not u[0].get("is_active"):
         return False, "Usuário não autorizado. Use /start e peça autorização."
-    user_id = ud[0]["id"]
-    role = ud[0]["role"]
+    user_id = u[0]["id"]
+    role = u[0]["role"]
 
-    # category id
-    c = sb.table("categories").select("id").eq("name", cat_name).execute()
-    cd = get_or_none(c)
-    cat_id = cd[0]["id"] if cd else None
+    c = rows(sb.table("categories").select("id").eq("name", cat_name).execute())
+    cat_id = c[0]["id"] if c else None
 
-    # cost center id
     cc_id = None
     if cc_code:
-        cc = sb.table("cost_centers").select("id").eq("code", cc_code).execute()
-        ccd = get_or_none(cc)
-        if ccd:
-            cc_id = ccd[0]["id"]
+        cc = rows(sb.table("cost_centers").select("id").eq("code", cc_code).execute())
+        if cc:
+            cc_id = cc[0]["id"]
 
     status = "approved" if role in ("owner", "partner") else "pending"
 
@@ -179,19 +193,22 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     month_start = today.replace(day=1).isoformat()
     month_end = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1).isoformat()
 
-    # busca despesas do mês
-    resp = sb.table("entries").select("amount,category_id,cost_center_id,type,entry_date,status") \
-        .gte("entry_date", month_start).lt("entry_date", month_end).eq("type", "expense").execute()
-    rows = get_or_none(resp) or []
+    resp = rows(
+        sb.table("entries")
+        .select("amount,category_id,cost_center_id,type,entry_date,status")
+        .gte("entry_date", month_start)
+        .lt("entry_date", month_end)
+        .eq("type", "expense")
+        .execute()
+    ) or []
 
-    # mapas auxiliares
-    cats = {r["id"]: r["name"] for r in get_or_none(sb.table("categories").select("id,name").execute())}
-    ccs = {r["id"]: r["code"] for r in get_or_none(sb.table("cost_centers").select("id,code").execute())}
+    cats = {r["id"]: r["name"] for r in rows(sb.table("categories").select("id,name").execute()) or []}
+    ccs  = {r["id"]: r["code"] for r in rows(sb.table("cost_centers").select("id,code").execute()) or []}
 
     by_cat = defaultdict(float)
-    by_cc = defaultdict(float)
+    by_cc  = defaultdict(float)
     total = 0.0
-    for r in rows:
+    for r in resp:
         total += float(r["amount"])
         by_cat[cats.get(r["category_id"], "Sem categoria")] += float(r["amount"])
         by_cc[ccs.get(r["cost_center_id"], "Sem CC")] += float(r["amount"])
@@ -222,18 +239,20 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ou usa /despesa 1200 tráfego pago SEDE"
         )
 
-# ------------------ Telegram Application ------------------
+# --------- TELEGRAM APP ---------
 tg_app: Application = ApplicationBuilder().token(TOKEN).build()
 tg_app.add_handler(CommandHandler("start", cmd_start))
+tg_app.add_handler(CommandHandler("eu", cmd_eu))
 tg_app.add_handler(CommandHandler("autorizar", cmd_autorizar))
 tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
 tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 
-# Inicialização / encerramento obrigatória p/ webhook manual
+# --------- LIFECYCLE (Render) ---------
 @app.on_event("startup")
 async def on_startup():
+    # Inicialização obrigatória pro PTB 21+
     await tg_app.initialize()
     await tg_app.start()
 
@@ -242,7 +261,7 @@ async def on_shutdown():
     await tg_app.stop()
     await tg_app.shutdown()
 
-# ------------------ FastAPI endpoints ------------------
+# --------- WEBHOOK ---------
 class TgUpdate(BaseModel):
     update_id: int | None = None
 
@@ -256,4 +275,3 @@ async def webhook(req: Request):
 @app.get("/")
 def alive():
     return {"boris": "ok"}
-
