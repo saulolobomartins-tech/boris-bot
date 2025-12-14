@@ -4,9 +4,13 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from dateutil.parser import parse as dateparse
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, ApplicationBuilder, CommandHandler,
+    MessageHandler, ContextTypes, filters
+)
 from supabase import create_client, Client
 
+# ------------------ Config ------------------
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -18,7 +22,8 @@ sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 
-def money_from_text(txt:str):
+# ------------------ Heurísticas ------------------
+def money_from_text(txt: str):
     # Extrai primeiro valor monetário do texto (R$ 1.200,00 / 1200 / 1.200,00).
     s = txt.replace("R$", "").replace(" ", "")
     m = re.search(r"(\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})?", s)
@@ -30,7 +35,7 @@ def money_from_text(txt:str):
     except:
         return None
 
-def guess_type(txt:str):
+def guess_type(txt: str):
     return "income" if re.search(r"\b(recebi|receita|entrada|vendi)\b", txt, re.I) else "expense"
 
 CATEGORY_RULES = [
@@ -46,14 +51,14 @@ CATEGORY_RULES = [
     (r"uber|frete|log[íi]stic|combust", "Logística"),
 ]
 
-def guess_category(txt:str):
+def guess_category(txt: str):
     low = txt.lower()
     for pat, cat in CATEGORY_RULES:
         if re.search(pat, low):
             return cat
     return "Outros"
 
-def guess_cc(txt:str):
+def guess_cc(txt: str):
     m = re.search(r"\bbloco\s*([a-f])\b", txt, re.I)
     if m:
         return f"BLOCO_{m.group(1).upper()}"
@@ -65,6 +70,7 @@ def get_or_none(res):
     # Helper para maybe_single do supabase-py: retornos com .data
     return res.data if hasattr(res, "data") else res
 
+# ------------------ Comandos ------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     # cria ou atualiza registro do usuário como inativo por padrão
@@ -97,12 +103,12 @@ async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role = "buyer"
     for a in context.args[1:]:
         if a.startswith("role="):
-            role = a.split("=",1)[1]
+            role = a.split("=", 1)[1]
 
     sb.table("users").upsert({"tg_user_id": target, "role": role, "is_active": True, "name": ""}).execute()
     await update.message.reply_text(f"Usuário {target} autorizado como {role} ✅")
 
-def save_entry(tg_user_id:int, txt:str):
+def save_entry(tg_user_id: int, txt: str):
     amount = money_from_text(txt)
     if amount is None:
         return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
@@ -131,7 +137,7 @@ def save_entry(tg_user_id:int, txt:str):
         if ccd:
             cc_id = ccd[0]["id"]
 
-    status = "approved" if role in ("owner","partner") else "pending"
+    status = "approved" if role in ("owner", "partner") else "pending"
 
     sb.table("entries").insert({
         "entry_date": datetime.date.today().isoformat(),
@@ -159,7 +165,7 @@ async def cmd_despesa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args) if context.args else (update.message.text or "")
-    ok, res = save_entry(update.effective_user.id, "receita "+txt)
+    ok, res = save_entry(update.effective_user.id, "receita " + txt)
     if ok:
         r = res
         await update.message.reply_text(
@@ -174,24 +180,25 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     month_end = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1).isoformat()
 
     # busca despesas do mês
-    resp = sb.table("entries").select("amount,category_id,cost_center_id,type,entry_date,status").gte("entry_date", month_start).lt("entry_date", month_end).eq("type","expense").execute()
+    resp = sb.table("entries").select("amount,category_id,cost_center_id,type,entry_date,status") \
+        .gte("entry_date", month_start).lt("entry_date", month_end).eq("type", "expense").execute()
     rows = get_or_none(resp) or []
 
     # mapas auxiliares
     cats = {r["id"]: r["name"] for r in get_or_none(sb.table("categories").select("id,name").execute())}
-    ccs  = {r["id"]: r["code"] for r in get_or_none(sb.table("cost_centers").select("id,code").execute())}
+    ccs = {r["id"]: r["code"] for r in get_or_none(sb.table("cost_centers").select("id,code").execute())}
 
     by_cat = defaultdict(float)
-    by_cc  = defaultdict(float)
+    by_cc = defaultdict(float)
     total = 0.0
     for r in rows:
         total += float(r["amount"])
-        by_cat[cats.get(r["category_id"],"Sem categoria")] += float(r["amount"])
-        by_cc[ccs.get(r["cost_center_id"],"Sem CC")] += float(r["amount"])
+        by_cat[cats.get(r["category_id"], "Sem categoria")] += float(r["amount"])
+        by_cc[ccs.get(r["cost_center_id"], "Sem CC")] += float(r["amount"])
 
     def fmt(d):
         items = sorted(d.items(), key=lambda x: x[1], reverse=True)
-        return "\n".join([f"• {k}: R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") for k,v in items]) or "• (sem lançamentos)"
+        return "\n".join([f"• {k}: R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") for k, v in items]) or "• (sem lançamentos)"
 
     moeda = lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     msg = (
@@ -215,7 +222,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ou usa /despesa 1200 tráfego pago SEDE"
         )
 
-# Telegram app
+# ------------------ Telegram Application ------------------
 tg_app: Application = ApplicationBuilder().token(TOKEN).build()
 tg_app.add_handler(CommandHandler("start", cmd_start))
 tg_app.add_handler(CommandHandler("autorizar", cmd_autorizar))
@@ -224,6 +231,18 @@ tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 
+# Inicialização / encerramento obrigatória p/ webhook manual
+@app.on_event("startup")
+async def on_startup():
+    await tg_app.initialize()
+    await tg_app.start()
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await tg_app.stop()
+    await tg_app.shutdown()
+
+# ------------------ FastAPI endpoints ------------------
 class TgUpdate(BaseModel):
     update_id: int | None = None
 
@@ -237,3 +256,4 @@ async def webhook(req: Request):
 @app.get("/")
 def alive():
     return {"boris": "ok"}
+
