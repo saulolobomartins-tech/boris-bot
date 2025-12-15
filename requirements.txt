@@ -5,3 +5,4 @@ psycopg[binary]
 pydantic
 supabase
 python-dateutil
+openai>=1.37.0
