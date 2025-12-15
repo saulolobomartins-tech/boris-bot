@@ -1,26 +1,39 @@
-import os, re, datetime, asyncio
+import os, re, datetime, asyncio, uuid
 from collections import defaultdict
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, ApplicationBuilder, CommandHandler,
+    MessageHandler, ContextTypes, filters
+)
 from supabase import create_client, Client
 
-# --------- ENV ---------
+# ============== Config ==============
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # opcional (Whisper)
 
 if not (TOKEN and SUPABASE_URL and SUPABASE_KEY):
     raise RuntimeError("Faltam variáveis de ambiente: TELEGRAM_TOKEN, SUPABASE_URL, SUPABASE_KEY")
 
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --------- FASTAPI ---------
+# OpenAI client (só se tiver chave)
+try:
+    from openai import OpenAI
+    openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+except Exception:
+    openai_client = None
+
+# FastAPI
 app = FastAPI()
 
-# --------- HELPERS ---------
+
+# ============== Helpers ==============
 def money_from_text(txt: str):
+    # Extrai primeiro valor monetário do texto (R$ 1.200,00 / 1200 / 1.200,00).
     s = txt.replace("R$", "").replace(" ", "")
     m = re.search(r"(\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})?", s)
     if not m:
@@ -31,8 +44,10 @@ def money_from_text(txt: str):
     except:
         return None
 
+
 def guess_type(txt: str):
     return "income" if re.search(r"\b(recebi|receita|entrada|vendi)\b", txt, re.I) else "expense"
+
 
 CATEGORY_RULES = [
     (r"eletricist|el[eé]tric", "Elétrico"),
@@ -47,12 +62,14 @@ CATEGORY_RULES = [
     (r"uber|frete|log[íi]stic|combust", "Logística"),
 ]
 
+
 def guess_category(txt: str):
     low = txt.lower()
     for pat, cat in CATEGORY_RULES:
         if re.search(pat, low):
             return cat
     return "Outros"
+
 
 def guess_cc(txt: str):
     m = re.search(r"\bbloco\s*([a-f])\b", txt, re.I)
@@ -62,94 +79,46 @@ def guess_cc(txt: str):
         return "SEDE"
     return None
 
-def rows(res):
-    return getattr(res, "data", res)
 
-# --------- COMMANDS ---------
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    # cria (ou garante) registro como inativo por padrão
-    got = sb.table("users").select("*").eq("tg_user_id", u.id).execute()
-    data = rows(got)
-    if not data:
-        sb.table("users").insert({
-            "tg_user_id": u.id, "name": u.full_name, "role": "viewer", "is_active": False
-        }).execute()
+def get_or_none(res):
+    # Helper para respostas do supabase-py: retornos com .data
+    return res.data if hasattr(res, "data") else res
 
-    await update.message.reply_text(
-        f"Fala, {u.first_name}! Eu sou o Boris.\n"
-        f"Teu Telegram user id é: {u.id}\n"
-        f"Pede pro owner te autorizar com /autorizar {u.id} role=buyer"
-    )
 
-async def cmd_eu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    me = rows(sb.table("users").select("role,is_active,name").eq("tg_user_id", u.id).execute())
-    if not me:
-        await update.message.reply_text("Não te encontrei na base. Usa /start primeiro.")
-        return
-    await update.message.reply_text(f"Você: role={me[0]['role']}, ativo={me[0]['is_active']}")
+def moeda(v: float) -> str:
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        u = update.effective_user
-        you = rows(sb.table("users").select("role,is_active").eq("tg_user_id", u.id).execute())
-        if not you or you[0].get("role") != "owner" or not you[0].get("is_active"):
-            await update.message.reply_text("Somente o owner ativo pode autorizar usuários.")
-            return
 
-        if len(context.args) == 0:
-            await update.message.reply_text("Uso: /autorizar <tg_user_id> role=owner|partner|buyer|viewer")
-            return
-
-        target = int(context.args[0])
-        role = "buyer"
-        for a in context.args[1:]:
-            if a.startswith("role="):
-                role = a.split("=", 1)[1].strip() or "buyer"
-
-        # Tenta UPDATE primeiro
-        exist = rows(sb.table("users").select("id").eq("tg_user_id", target).execute())
-        if exist:
-            sb.table("users").update({"role": role, "is_active": True}).eq("tg_user_id", target).execute()
-        else:
-            # fallback: insert novo
-            sb.table("users").insert({"tg_user_id": target, "role": role, "is_active": True}).execute()
-
-        await update.message.reply_text(f"✅ Usuário {target} autorizado como {role}.")
-    except Exception as e:
-        # último recurso: tenta upsert com on_conflict
-        try:
-            sb.table("users").upsert(
-                {"tg_user_id": target, "role": role, "is_active": True},
-                on_conflict="tg_user_id"
-            ).execute()
-            await update.message.reply_text(f"✅ Usuário {target} autorizado como {role}.")
-        except Exception as e2:
-            await update.message.reply_text(f"⚠️ Erro ao autorizar: {e2}")
-
+# ============== Core de Lançamento ==============
 def save_entry(tg_user_id: int, txt: str):
     amount = money_from_text(txt)
     if amount is None:
         return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
+
     etype = guess_type(txt)
     cat_name = guess_category(txt)
     cc_code = guess_cc(txt)
 
-    u = rows(sb.table("users").select("*").eq("tg_user_id", tg_user_id).execute())
-    if not u or not u[0].get("is_active"):
+    # usuário
+    u = sb.table("users").select("*").eq("tg_user_id", tg_user_id).execute()
+    ud = get_or_none(u)
+    if not ud or not ud[0]["is_active"]:
         return False, "Usuário não autorizado. Use /start e peça autorização."
-    user_id = u[0]["id"]
-    role = u[0]["role"]
+    user_id = ud[0]["id"]
+    role = ud[0]["role"]
 
-    c = rows(sb.table("categories").select("id").eq("name", cat_name).execute())
-    cat_id = c[0]["id"] if c else None
+    # category id
+    c = sb.table("categories").select("id").eq("name", cat_name).execute()
+    cd = get_or_none(c)
+    cat_id = cd[0]["id"] if cd else None
 
+    # cost center id
     cc_id = None
     if cc_code:
-        cc = rows(sb.table("cost_centers").select("id").eq("code", cc_code).execute())
-        if cc:
-            cc_id = cc[0]["id"]
+        cc = sb.table("cost_centers").select("id").eq("code", cc_code).execute()
+        ccd = get_or_none(cc)
+        if ccd:
+            cc_id = ccd[0]["id"]
 
     status = "approved" if role in ("owner", "partner") else "pending"
 
@@ -166,16 +135,57 @@ def save_entry(tg_user_id: int, txt: str):
 
     return True, {"amount": amount, "type": etype, "category": cat_name, "cc": cc_code, "status": status}
 
+
+# ============== Comandos ==============
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    exist = sb.table("users").select("*").eq("tg_user_id", u.id).execute()
+    data = get_or_none(exist)
+    if not data:
+        sb.table("users").insert({
+            "tg_user_id": u.id, "name": u.full_name, "role": "viewer", "is_active": False
+        }).execute()
+
+    await update.message.reply_text(
+        f"Fala, {u.first_name}! Eu sou o Boris.\n"
+        f"Teu Telegram user id é: {u.id}\n"
+        f"Pede pro owner te autorizar com /autorizar {u.id} role=buyer"
+    )
+
+
+async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    q = sb.table("users").select("role,is_active").eq("tg_user_id", u.id).execute()
+    you = get_or_none(q)
+    if not you or you[0]["role"] != "owner" or not you[0]["is_active"]:
+        await update.message.reply_text("Somente o owner pode autorizar usuários.")
+        return
+
+    if len(context.args) == 0:
+        await update.message.reply_text("Uso: /autorizar <tg_user_id> role=owner|partner|buyer|viewer")
+        return
+
+    target = int(context.args[0])
+    role = "buyer"
+    for a in context.args[1:]:
+        if a.startswith("role="):
+            role = a.split("=", 1)[1]
+
+    sb.table("users").upsert({"tg_user_id": target, "role": role, "is_active": True, "name": ""}).execute()
+    await update.message.reply_text(f"Usuário {target} autorizado como {role} ✅")
+
+
 async def cmd_despesa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args) if context.args else (update.message.text or "")
     ok, res = save_entry(update.effective_user.id, txt)
     if ok:
         r = res
         await update.message.reply_text(
-            f"✅ Lançado: R$ {r['amount']:.2f} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}"
+            f"✅ Lançado: {moeda(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}"
         )
     else:
         await update.message.reply_text(f"⚠️ {res}")
+
 
 async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args) if context.args else (update.message.text or "")
@@ -183,41 +193,37 @@ async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ok:
         r = res
         await update.message.reply_text(
-            f"✅ Receita: R$ {r['amount']:.2f} • {r['category']} • {r['cc'] or 'Sem CC'}"
+            f"✅ Receita: {moeda(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'}"
         )
     else:
         await update.message.reply_text(f"⚠️ {res}")
+
 
 async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.date.today()
     month_start = today.replace(day=1).isoformat()
     month_end = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1).isoformat()
 
-    resp = rows(
-        sb.table("entries")
-        .select("amount,category_id,cost_center_id,type,entry_date,status")
-        .gte("entry_date", month_start)
-        .lt("entry_date", month_end)
-        .eq("type", "expense")
-        .execute()
-    ) or []
+    resp = sb.table("entries").select(
+        "amount,category_id,cost_center_id,type,entry_date,status"
+    ).gte("entry_date", month_start).lt("entry_date", month_end).eq("type", "expense").execute()
+    rows = get_or_none(resp) or []
 
-    cats = {r["id"]: r["name"] for r in rows(sb.table("categories").select("id,name").execute()) or []}
-    ccs  = {r["id"]: r["code"] for r in rows(sb.table("cost_centers").select("id,code").execute()) or []}
+    cats = {r["id"]: r["name"] for r in get_or_none(sb.table("categories").select("id,name").execute())}
+    ccs = {r["id"]: r["code"] for r in get_or_none(sb.table("cost_centers").select("id,code").execute())}
 
     by_cat = defaultdict(float)
-    by_cc  = defaultdict(float)
+    by_cc = defaultdict(float)
     total = 0.0
-    for r in resp:
+    for r in rows:
         total += float(r["amount"])
         by_cat[cats.get(r["category_id"], "Sem categoria")] += float(r["amount"])
         by_cc[ccs.get(r["cost_center_id"], "Sem CC")] += float(r["amount"])
 
     def fmt(d):
         items = sorted(d.items(), key=lambda x: x[1], reverse=True)
-        return "\n".join([f"• {k}: R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") for k, v in items]) or "• (sem lançamentos)"
+        return "\n".join([f"• {k}: {moeda(v)}" for k, v in items]) or "• (sem lançamentos)"
 
-    moeda = lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     msg = (
         f"📊 *Resumo do mês*\n"
         f"Total: *{moeda(total)}*\n\n"
@@ -226,12 +232,13 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_markdown(msg)
 
+
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok, res = save_entry(update.effective_user.id, update.message.text or "")
     if ok:
         r = res
         await update.message.reply_text(
-            f"✅ Lançado: R$ {r['amount']:.2f} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}"
+            f"✅ Lançado: {moeda(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}"
         )
     else:
         await update.message.reply_text(
@@ -239,31 +246,119 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ou usa /despesa 1200 tráfego pago SEDE"
         )
 
-# --------- TELEGRAM APP ---------
+
+# ============== Áudio (Whisper) ==============
+async def voice_or_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not openai_client:
+        await update.message.reply_text(
+            "Transcrição de áudio ainda não configurada. Adicione OPENAI_API_KEY no Render para ativar. 😉"
+        )
+        return
+
+    # Pega o arquivo (voice ou audio)
+    tgfile = None
+    mime = None
+    if update.message.voice:
+        f = await update.message.voice.get_file()
+        tgfile = f
+        mime = update.message.voice.mime_type or "audio/ogg"
+        ext = ".oga"
+    elif update.message.audio:
+        f = await update.message.audio.get_file()
+        tgfile = f
+        mime = update.message.audio.mime_type or "audio/mpeg"
+        # tenta adivinhar extensão simples
+        if "mpeg" in mime or "mp3" in mime:
+            ext = ".mp3"
+        elif "ogg" in mime:
+            ext = ".ogg"
+        elif "wav" in mime:
+            ext = ".wav"
+        else:
+            ext = ".audio"
+    else:
+        await update.message.reply_text("Não recebi um áudio válido.")
+        return
+
+    # Salva localmente em /tmp
+    local_path = f"/tmp/{uuid.uuid4().hex}{ext}"
+    await tgfile.download_to_drive(local_path)
+
+    # Chama Whisper (modelo whisper-1)
+    try:
+        def _transcribe(path: str) -> str:
+            with open(path, "rb") as fh:
+                resp = openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=fh,
+                    language="pt"  # ajuda a qualidade
+                )
+            return getattr(resp, "text", "").strip()
+
+        text = await asyncio.to_thread(_transcribe, local_path)
+
+    except Exception as e:
+        await update.message.reply_text(f"Não consegui transcrever o áudio. {e}")
+        return
+    finally:
+        try:
+            os.remove(local_path)
+        except Exception:
+            pass
+
+    if not text:
+        await update.message.reply_text("Não consegui entender o áudio.")
+        return
+
+    # Usa o texto transcrito como se fosse uma mensagem normal
+    ok, res = save_entry(update.effective_user.id, text)
+    if ok:
+        r = res
+        await update.message.reply_text(
+            f"🗣️ Transcrito: “{text}”\n"
+            f"✅ Lançado: {moeda(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}"
+        )
+    else:
+        await update.message.reply_text(
+            f"🗣️ Transcrito: “{text}”\n"
+            f"⚠️ {res}"
+        )
+
+
+# ============== Telegram Application ==============
 tg_app: Application = ApplicationBuilder().token(TOKEN).build()
+
+# Comandos
 tg_app.add_handler(CommandHandler("start", cmd_start))
-tg_app.add_handler(CommandHandler("eu", cmd_eu))
 tg_app.add_handler(CommandHandler("autorizar", cmd_autorizar))
 tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
 tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
+
+# Texto comum
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 
-# --------- LIFECYCLE (Render) ---------
+# Áudio/Voice -> Whisper
+tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_or_audio))
+
+
+# ============== FastAPI <-> Telegram Webhook ==============
+class TgUpdate(BaseModel):
+    update_id: int | None = None
+
+
+# Inicialização/encerramento necessários no modo webhook
 @app.on_event("startup")
 async def on_startup():
-    # Inicialização obrigatória pro PTB 21+
     await tg_app.initialize()
     await tg_app.start()
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
     await tg_app.stop()
     await tg_app.shutdown()
 
-# --------- WEBHOOK ---------
-class TgUpdate(BaseModel):
-    update_id: int | None = None
 
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -271,6 +366,7 @@ async def webhook(req: Request):
     update = Update.de_json(data, tg_app.bot)
     await tg_app.process_update(update)
     return {"ok": True}
+
 
 @app.get("/")
 def alive():
