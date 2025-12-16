@@ -75,14 +75,12 @@ def get_default_account_id() -> str:
         _DEFAULT_ACCOUNT_ID = rows[0]["id"]
         return _DEFAULT_ACCOUNT_ID
 
-    # cria se não existir
     ins = sb.table("accounts").insert({"name": "DEFAULT ACCOUNT", "plan": "free"}).execute()
     created = get_or_none(ins) or []
     if created:
         _DEFAULT_ACCOUNT_ID = created[0]["id"]
         return _DEFAULT_ACCOUNT_ID
 
-    # fallback
     res2 = sb.table("accounts").select("id").eq("name", "DEFAULT ACCOUNT").limit(1).execute()
     rows2 = get_or_none(res2) or []
     if not rows2:
@@ -182,6 +180,18 @@ QUERY_INTENT_RE = re.compile(
     r"\b(quanto\s+(eu\s+)?gastei|gastos|relat[oó]rio|me\s+mostra|mostra\s+pra\s+mim|me\s+manda)\b",
     re.I
 )
+
+# ✅ SALDO (NOVO)
+BALANCE_INTENT_RE = re.compile(
+    r"\b(saldo|saldo\s+atual|qual\s+e\s+o\s+saldo|quanto\s+tenho|quanto\s+eu\s+tenho|quanto\s+sobrou)\b",
+    re.I
+)
+
+def is_balance_intent(text: str) -> bool:
+    return bool(BALANCE_INTENT_RE.search(_norm(text)))
+
+def has_money_value(text: str) -> bool:
+    return money_from_text(text) is not None
 
 # =====================================================================================
 #                               PARSE DE TEXTO
@@ -386,13 +396,11 @@ def save_entry(tg_user_id: int, txt: str):
     if amount is None:
         return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-    # força INCOME com termos de entrada
     if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s*mim)\b", low):
         etype = "income"
     else:
         etype = "expense"
 
-    # usuário -> pega account_id
     u = sb.table("users").select("id,role,is_active,account_id").eq("tg_user_id", tg_user_id).execute()
     ud = get_or_none(u) or []
     if not ud or not ud[0]["is_active"]:
@@ -408,7 +416,6 @@ def save_entry(tg_user_id: int, txt: str):
     dtx = parse_date_pt(txt)
     entry_date = dtx or datetime.date.today().isoformat()
 
-    # garante ids por CONTA
     cat_id = ensure_category_id(account_id, cat_name)
     cc_id = ensure_cost_center_id(account_id, cc_code) if cc_code else None
 
@@ -430,7 +437,6 @@ def save_entry(tg_user_id: int, txt: str):
     try:
         sb.table("entries").insert(payload).execute()
     except Exception:
-        # se ainda não existir coluna paid_via, insere sem
         payload.pop("paid_via", None)
         sb.table("entries").insert(payload).execute()
 
@@ -448,8 +454,34 @@ def save_entry(tg_user_id: int, txt: str):
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
 
+async def run_balance_and_reply(update: Update):
+    """
+    Saldo da CONTA: receitas - despesas (todas as entries).
+    """
+    u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
+    ud = get_or_none(u) or []
+    if not ud or not ud[0]["is_active"]:
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+    account_id = ud[0].get("account_id") or get_default_account_id()
+
+    resp = sb.table("entries").select("amount,type").eq("account_id", account_id).execute()
+    rows = get_or_none(resp) or []
+
+    total_income = sum(float(r["amount"]) for r in rows if r.get("type") == "income")
+    total_expense = sum(float(r["amount"]) for r in rows if r.get("type") == "expense")
+    saldo = total_income - total_expense
+
+    await update.message.reply_text(
+        f"💰 Saldo atual:\n"
+        f"Receitas: {moeda_fmt(total_income)}\n"
+        f"Despesas: {moeda_fmt(total_expense)}\n"
+        f"———————————\n"
+        f"Saldo: {moeda_fmt(saldo)}",
+        parse_mode="Markdown"
+    )
+
 async def run_query_and_reply(update: Update, text: str):
-    # pega account_id do usuário que pediu relatório
     u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
     ud = get_or_none(u) or []
     if not ud or not ud[0]["is_active"]:
@@ -642,11 +674,29 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = (update.message.text or "").strip()
 
-    # Consulta/relatório por texto
+    # 1) SALDO
+    if is_balance_intent(user_text):
+        await run_balance_and_reply(update)
+        return
+
+    # 2) CONSULTA/RELATÓRIO
     if is_report_intent(user_text):
         await run_query_and_reply(update, user_text)
         return
 
+    # 3) SE NÃO TEM VALOR, NÃO É LANÇAMENTO
+    if not has_money_value(user_text):
+        await update.message.reply_text(
+            "Não entendi como lançamento.\n"
+            "Exemplos:\n"
+            "• paguei 200 no eletricista da obra do Rodrigo (pix)\n"
+            "• recebi 1200 da Joana (pix)\n"
+            "• quanto eu gastei esse mês\n"
+            "• qual é o saldo atual"
+        )
+        return
+
+    # 4) LANÇAMENTO
     ok, res = save_entry(update.effective_user.id, user_text)
     if ok:
         r = res
@@ -661,11 +711,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}"
         )
     else:
-        await update.message.reply_text(
-            "Me manda algo tipo: 'paguei 200 no eletricista da obra do Rodrigo (pix)'\n"
-            "ou: 'recebi 1200 da Joana (pix)'\n"
-            "ou usa /despesa 1200 tinta reforma Joana"
-        )
+        await update.message.reply_text(f"⚠️ {res}")
 
 # -------------------- ÁUDIO (voice/audio) — robusto com /tmp --------------------
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -732,11 +778,27 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Não consegui entender o áudio.")
         return
 
+    # 1) SALDO (NOVO)
+    if is_balance_intent(text_out):
+        await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
+        await run_balance_and_reply(update)
+        return
+
+    # 2) CONSULTA
     if is_report_intent(text_out):
         await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
         await run_query_and_reply(update, text_out)
         return
 
+    # 3) SE NÃO TEM VALOR, NÃO É LANÇAMENTO
+    if not has_money_value(text_out):
+        await update.message.reply_text(
+            f"🗣️ Transcrito: “{text_out}”\n"
+            "Não identifiquei um lançamento."
+        )
+        return
+
+    # 4) LANÇAMENTO
     ok, res = save_entry(update.effective_user.id, text_out)
     if ok:
         r = res
