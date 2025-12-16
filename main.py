@@ -346,17 +346,28 @@ def is_report_intent(text: str):
 # =====================================================================================
 
 def save_entry(tg_user_id:int, txt:str):
+    # Normaliza
+    low = _norm(txt)
+
+    # Detecta valor
     amount = money_from_text(txt)
     if amount is None:
         return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-    etype = guess_type(txt)
+    # Tipo (força income se tiver palavras de entrada)
+    if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s*mim)\b", low):
+        etype = "income"
+    else:
+        etype = "expense"
+
+    # Categorias / CC / Pagamento / Data
     cat_name = guess_category(txt)
     cc_code  = guess_cc(txt)
     paid_via = guess_payment(txt)
     dtx = parse_date_pt(txt)
     entry_date = dtx or datetime.date.today().isoformat()
 
+    # Usuário
     u = sb.table("users").select("*").eq("tg_user_id", tg_user_id).execute()
     ud = get_or_none(u)
     if not ud or not ud[0]["is_active"]:
@@ -364,10 +375,12 @@ def save_entry(tg_user_id:int, txt:str):
     user_id = ud[0]["id"]
     role = ud[0]["role"]
 
+    # Categoria
     c = sb.table("categories").select("id").eq("name", cat_name).execute()
     cd = get_or_none(c)
     cat_id = cd[0]["id"] if cd else None
 
+    # Centro de custo
     cc_id = None
     if cc_code:
         cc_id = _ensure_cost_center(cc_code)
@@ -381,7 +394,7 @@ def save_entry(tg_user_id:int, txt:str):
         "description": txt,
         "category_id": cat_id,
         "cost_center_id": cc_id,
-        "paid_via": paid_via,   # coluna opcional (se existir)
+        "paid_via": paid_via,
         "created_by": user_id,
         "status": status
     }
@@ -389,7 +402,6 @@ def save_entry(tg_user_id:int, txt:str):
     try:
         sb.table("entries").insert(payload).execute()
     except Exception:
-        # fallback sem paid_via se coluna não existir
         payload.pop("paid_via", None)
         sb.table("entries").insert(payload).execute()
 
@@ -402,6 +414,7 @@ def save_entry(tg_user_id:int, txt:str):
         "paid_via": paid_via,
         "entry_date": entry_date
     }
+
 
 # =====================================================================================
 #                               CONSULTAS / RELATÓRIOS
