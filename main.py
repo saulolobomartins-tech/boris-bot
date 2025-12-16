@@ -701,9 +701,9 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if money_from_text(user_text) is not None:
             PENDING_BY_USER[uid] = {"txt": user_text}
             await update.message.reply_text(
-                "Beleza. Só me diz **qual obra/centro de custo** pra eu lançar certinho.\n"
-                "Ex: `obra do Rodrigo` ou `reforma da Ellen`.\n\n"
-                "Dica: podes setar a obra do dia com `/obra Rodrigo`."
+                "Beleza. Só me diz *qual obra/centro de custo* pra eu lançar certinho.\n"
+                "Ex: obra do Rodrigo ou reforma da Ellen.\n\n"
+                "Dica: podes setar a obra do dia com /obra Rodrigo."
             )
             return
 
@@ -724,7 +724,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # se assumiu CC, dá chance de corrigir sem stress
         if r.get("used_last_cc"):
-            await update.message.reply_text("Se essa obra não for a certa, manda: `obra do <nome>` (que eu ajusto pro próximo).")
+            await update.message.reply_text("Se essa obra não for a certa, manda: obra do <nome> (que eu ajusto pro próximo).")
     else:
         await update.message.reply_text(
             "Me manda algo tipo:\n"
