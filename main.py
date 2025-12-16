@@ -575,16 +575,14 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Lançamento normal
     ok, res = save_entry(update.effective_user.id, user_text)
-    if ok:
-        r = res
-        extras = []
-        if r.get("entry_date"): extras.append(f"🗓️ {r['entry_date']}")
-        if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
-        tail = ("\n" + " • ".join(extras)) if extras else ""
-        await update.message.reply_text(
-            f"✅ Lançado: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}"
-        )
-    else:
+if ok:
+    r = res
+    label = "Receita" if r.get("type") == "income" else "Lançado"
+    paid_str = f" • {r['paid_via']}" if r.get("paid_via") else ""
+    await update.message.reply_text(
+        f"✅ {label}: R$ {r['amount']:.2f} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{paid_str}"
+    )
+else:
         await update.message.reply_text(
             "Me manda algo tipo: 'paguei 200 no eletricista da obra do Rodrigo (pix)'\n"
             "ou usa /despesa 1200 tinta reforma Joana"
@@ -666,18 +664,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Lançamento padrão
-    ok, res = save_entry(update.effective_user.id, text_out)
-    if ok:
-        r = res
-        extras = []
-        if r.get("entry_date"): extras.append(f"🗓️ {r['entry_date']}")
-        if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
-        tail = ("\n" + " • ".join(extras)) if extras else ""
-        await update.message.reply_text(
-            f"🗣️ Transcrito: “{text_out}”\n"
-            f"✅ Lançado: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}"
-        )
-    else:
+    ok, res = save_entry(update.effective_user.id, transcrito)
+if ok:
+    r = res
+    label = "Receita" if r.get("type") == "income" else "Lançado"
+    paid_str = f" • {r['paid_via']}" if r.get("paid_via") else ""
+    await update.message.reply_text(
+        f"🗣️ Transcrito: “{transcrito}”\n"
+        f"✅ {label}: R$ {r['amount']:.2f} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{paid_str}"
+    )
+else:
         await update.message.reply_text(
             f"🗣️ Transcrito: “{text_out}”\n"
             f"⚠️ {res}"
