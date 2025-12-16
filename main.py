@@ -58,6 +58,10 @@ def get_or_none(res):
 _DEFAULT_ACCOUNT_ID = None
 
 def get_default_account_id() -> str:
+    """
+    Busca (ou cria) uma conta padrão.
+    Depende de tabela accounts(name, plan, id).
+    """
     global _DEFAULT_ACCOUNT_ID
     if _DEFAULT_ACCOUNT_ID:
         return _DEFAULT_ACCOUNT_ID
@@ -124,98 +128,85 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
         return None
 
 # =====================================================================================
-#                              CC "ATUAL" + PENDÊNCIAS
-# =====================================================================================
-
-# cache em memória (fallback caso users.last_cc_code não exista)
-LAST_CC_CACHE: dict[int, str] = {}
-# quando falta CC, guardamos o lançamento aqui pra completar na próxima msg
-PENDING_BY_USER: dict[int, dict] = {}
-
-def _get_user_row(tg_user_id: int):
-    # tenta trazer last_cc_code (se existir)
-    try:
-        q = sb.table("users").select("id,role,is_active,account_id,last_cc_code").eq("tg_user_id", tg_user_id).limit(1).execute()
-        rows = get_or_none(q) or []
-        return rows[0] if rows else None
-    except Exception:
-        q = sb.table("users").select("id,role,is_active,account_id").eq("tg_user_id", tg_user_id).limit(1).execute()
-        rows = get_or_none(q) or []
-        return rows[0] if rows else None
-
-def _get_last_cc(tg_user_id: int) -> str | None:
-    row = _get_user_row(tg_user_id)
-    if row and row.get("last_cc_code"):
-        return row.get("last_cc_code")
-    return LAST_CC_CACHE.get(tg_user_id)
-
-def _set_last_cc(tg_user_id: int, cc_code: str):
-    if not cc_code:
-        return
-    LAST_CC_CACHE[tg_user_id] = cc_code
-    # tenta persistir em users.last_cc_code (se tiver coluna)
-    try:
-        sb.table("users").update({"last_cc_code": cc_code}).eq("tg_user_id", tg_user_id).execute()
-    except Exception:
-        pass
-
-# =====================================================================================
 #                              REGRAS & DICIONÁRIOS
 # =====================================================================================
 
-# Categorias (regex -> nome)
 CATEGORY_RULES = [
     # Mão de obra / serviços
-    (r"\b(mao\s*de\s*obra|m\.?o\.?|diari(a|as)|diarista|pedreir|servente|ajudant|marceneir|carpinteir|pintor|gesseir|azulejist|eletricist|encanad|canador|soldador|serralheir|aplicador|montador|empreiteir|mestre\s*de\s*obra)\b", "Mão de Obra"),
+    (r"\b(mao\s*de\s*obra|m[aã]o\s*de\s*obra|diari(a|as)|diaria(s)?|pedreir|ajudant|servente|marceneir|soldador|aplicador)\b", "Mão de Obra"),
 
     # Elétrica
-    (r"\b(eletric(a|o)|eletricist|fiao|fiacao|fio|cabo|cabos|eletroduto|conduite|quadro|disjuntor|dj\b|dr\b|tomada|interruptor|luminaria|lampada|lâmpada|spot|led|refletor|reator|contator|contatora|sensor|fotocelula|fotocélula|aterramento|haste|dps|barramento|fase|neutro|terra)\b", "Elétrico"),
+    (r"\b(eletricist|eletric(a|o)?|fiao|fiacao|fiação|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento)\b", "Elétrico"),
 
-    # Hidráulico / Hidrossanitário
-    (r"\b(hidraul(ic(a|o))?|hidrossanitar|sanitar(io|ia)|encanad(or|ora|ores|oras)?|canador|encanam|encanamento|tubo(s)?|pex|ppr|pvc|joelho|luva|te\b|tê\b|conexao|conex(o|õ)es|registro|gaveta|pressao|torneira|misturador|chuveiro|ralo|sifao|sifão|caixa\s*d'?agua|caixa\s*de\s*gordura|gordura|esgoto|afluente|efluente|bomba|boia|boia\s*eletrica|vaso|bacia|descarga|valvula|válvula)\b", "Hidráulico"),
+    # Hidráulica / hidrossanitário
+    (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanador|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba)\b", "Hidráulico"),
 
-    # Estrutura / Fundação / Concreto / Alvenaria (junta porque na obra o cara fala misturado)
-    (r"\b(estrutura|fundac(a|ã)o|sapata|radier|baldrame|viga|pilar|laje|concreto|cimento|areia|brita|argamassa|reboco|embo(c|ç)o|chapisco|graute|arma(c|ç)(a|ã)o|ferragem|vergalh(a|ão)|malha\s*pop|tela\s*soldada|forma|madeirite|escoramento|concretagem|betoneira|bomba\s*de\s*concreto|bloco|tijolo|alvenaria|assentamento|rejunte\s*estrutural)\b", "Estrutura/Fundação/Alvenaria"),
+    # Drywall / gesso
+    (r"\b(drywall|forro|gesso|placa\s*acartonad)\b", "Drywall/Gesso"),
 
-    # Acabamento (inclui revestimentos, forro etc.)
-    (r"\b(acabamento|porcelanato|ceramica|cerâmica|revestimento|piso|contrapiso|nivelamento|massa\s*corida|massa\s*corrida|gesso|drywall|forro|sanca|emassa(mento)?|pintur(a|ar)|tinta|lixa|rolo|fita\s*crepe|rodape|rodapé|granito|marmore|mármore|bancada|box|esquadria|porta|janela|vidro|fechadura|dobradic(a|ç)a)\b", "Acabamento"),
+    # Pintura
+    (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|lixa|rolo|fita\s*crepe|spray)\b", "Pintura"),
+
+    # Estrutura / fundação / alvenaria
+    (r"\b(fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|cimento|areia|brita|argamassa|reboco|concreto|graute|bloco\s*ceram|vergalh|arma[cç][aã]o|forma)\b", "Estrutura/Alvenaria"),
 
     # Cobertura
-    (r"\b(cobertura|telha(s)?|cumeeira|calha|ruf(o|os)|impermeabiliz(a|ac|aç)|manta\s*asfaltica|manta\s*asf(a|á)ltica|vedacit|sika|poliuretan|selante|silicone|pingadeira)\b", "Cobertura/Impermeabilização"),
+    (r"\b(telha|calha|ruf(o|o)?|cumeeira|aluminio|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
+
+    # Acabamento
+    (r"\b(granito|porcelanato|piso|rodape|rodap[eé]|revestimento|rejunte|argamassa\s*col)\b", "Acabamento"),
+
+    # Esquadrias / vidro
+    (r"\b(porta(s)?|janela(s)?|vidro|esquadria|fechadur(a|as)|dobradi[cç]a|temperado|kit\s*porta)\b", "Esquadrias/Vidro"),
+
+    # Impermeabilização
+    (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
 
     # Ferragens / consumíveis
-    (r"\b(parafuso|bucha|chumbador|rebite|arruela|porca|eletrodo|disco\s*de\s*corte|disco\s*flap|lixa|broca|serra\s*copo|abra(c|ç)adeira|cinta|arame|preg(o|os)|consumivel|consumível)\b", "Ferragens/Consumíveis"),
+    (r"\b(ferra(gem|gens)?|parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite)\b", "Ferragens/Consumíveis"),
 
-    # Logística / Transporte / Combustível
-    (r"\b(uber|frete|entrega|transport(e|adora)|carretinha|mudanca|mudança|caminhao|caminhão|diesel|gasolina|etanol|combustivel|combustível|posto|abasteci|abastecimento|oleo|óleo|lubrificante)\b", "Logística/Combustível"),
+    # Ferramentas
+    (r"\b(ferramenta(s)?|esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|multímetro|trena)\b", "Ferramentas"),
 
-    # Equipamentos / locação
-    (r"\b(bobcat|compactador|placa\s*compactadora|gerador|betoneira|andaime|escora|munck|guindaste|plataforma|rompedor|martelete|aluguel\s*de\s*equip|loca(c|ç)(a|ã)o\s*de\s*equip|locacao\s*de\s*equip)\b", "Equipamentos"),
+    # Logística
+    (r"\b(uber|frete|entrega|logistic(a|o)?|carretinha|transport(e|adora)?)\b", "Logística"),
 
-    # Alimentação
-    (r"\b(alimenta(c|ç)(a|ã)o|comida|refeic(?:ao|oes)|refei(c|ç)(a|ã)o(?:es)?|marmita(s)?|quentinha(s)?|lanche(s)?|cafe|café|desjejum|almo(c|ç)o|jantar|restaurante|padaria|mercado|supermercado|agua|água|mineral)\b", "Alimentação"),
+    # Combustível
+    (r"\b(combust(iv|í)vel|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto)\b", "Combustível"),
 
-    # Custos fixos / taxas
-    (r"\b(aluguel|internet|energia|conta\s*de\s*luz|agua|água|telefone|contabilidade|escritorio|escrit(o|ó)rio|taxa|emolumento|cartorio|cartório|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof)\b", "Custos Fixos/Taxas"),
+    # Equipamentos
+    (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|munck|plataforma|guindaste)\b", "Equipamentos"),
+
+    # Marketing
+    (r"\b(trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio)\b", "Marketing"),
+
+    # Custos fixos
+    (r"\b(aluguel|loca[cç][aã]o\s*de\s*sala|internet|energia|conta\s*de\s*luz|conta\s*de\s*agua|conta\s*de\s*água|agua|água|telefone|contabilidade|escritorio|escrit[oó]rio)\b", "Custos Fixos"),
+
+    # Taxas / financeiro
+    (r"\b(taxa|emolumento|cartorio|cartório|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof)\b", "Taxas/Financeiro"),
+
+    # Alimentação (singular e plural + gírias)
+    (r"\b(comida(s)?|refeic(a|ã)o|refei[cç][oõ]es|lanche(s)?|marmit(a|as)|quentinha(s)?|almo[cç]o(s)?|jantar(es)?|restaurante(s)?)\b", "Alimentação"),
 ]
+
 DEFAULT_CATEGORY = "Outros"
 
-# Formas de pagamento
 PAYMENT_SYNONYMS = {
     "PIX":      r"\bpix\b|\bfiz\s+um\s+pix\b|\bmandei\s+um\s+pix\b|\bchave\s+pix\b",
-    "CREDITO":  r"\bcr[eé]dito\b|\bcart[aã]o\s+de\s+cr[eé]dito\b|\bpassei\s+no\s+cr[eé]dito\b|\bpassei\s+no\s+cart[aã]o\b",
-    "DEBITO":   r"\bd[eé]bito\b|\bcart[aã]o\s+de\s+d[eé]bito\b|\bpassei\s+no\s+d[eé]bito\b",
+    "CREDITO":  r"\bcr[eé]dito\b|\bno\s+cart[aã]o\s+de\s+cr[eé]dito\b|\bpassei\s+no\s+cr[eé]dito\b|\bpassei\s+no\s+cart[aã]o\b",
+    "DEBITO":   r"\bd[eé]bito\b|\bno\s+cart[aã]o\s+de\s+d[eé]bito\b|\bpassei\s+no\s+d[eé]bito\b",
     "DINHEIRO": r"\bdinheiro\b|\bem\s+esp[eé]cie\b|\bcash\b",
     "VALE":     r"\bvale\b|\badiantamento\b",
 }
 
 MONTHS_PT = {
-    "janeiro":1, "fevereiro":2, "marco":3, "março":3, "abril":4, "maio":5, "junho":6,
-    "julho":7, "agosto":8, "setembro":9, "outubro":10, "novembro":11, "dezembro":12
+    "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5, "junho": 6,
+    "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
 }
 
 QUERY_INTENT_RE = re.compile(
-    r"\b(quanto\s+(eu\s+)?gastei|quanto\s+entrou|gastos|receitas?|relat[oó]rio|me\s+mostra|mostra\s+pra\s+mim|me\s+manda)\b",
+    r"\b(quanto\s+(eu\s+)?gastei|gastos|relat[oó]rio|me\s+mostra|mostra\s+pra\s+mim|me\s+manda)\b",
     re.I
 )
 
@@ -255,17 +246,18 @@ def _slugify_name(name: str) -> str:
 
 def guess_cc(txt: str) -> str | None:
     """
-    Reconhece: 'obra do rodrigo', 'reforma da ellen', 'container de castanhal', etc.
-    Retorna code: OBRA_RODRIGO / REFORMA_ELLEN / CONTAINER_CASTANHAL
+    Reconhece: 'obra do rodrigo', 'reforma da joana', 'container de castanhal', etc.
+    Retorna: OBRA_RODRIGO / REFORMA_JOANA / CONTAINER_CASTANHAL
     """
     t = _norm(txt)
-
-    # aceita "obra rodrigo", "obra do rodrigo", "na obra do rodrigo", etc.
-    m = re.search(r"\b(obra|reforma|container)\s+(?:do|da|de|na|no|pro|pra)?\s*([a-z0-9][a-z0-9\s\-_.]+)\b", t)
+    m = re.search(r"\b(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
     if m:
         tipo = m.group(1)
-        nome = (m.group(2) or "").strip()
-        nome = re.split(r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|debito|cartao|cartão)\b", nome)[0].strip()
+        nome = m.group(2).strip()
+        nome = re.split(
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão)\b",
+            nome
+        )[0].strip()
         if nome:
             return f"{tipo.upper()}_{_slugify_name(nome)}"
     return None
@@ -279,14 +271,46 @@ def parse_date_pt(txt: str) -> str | None:
     if "anteontem" in t: return (today - timedelta(days=2)).isoformat()
     if "amanha" in t: return (today + timedelta(days=1)).isoformat()
 
+    if "semana passada" in t:
+        wd = today.weekday()
+        last_monday = today - timedelta(days=wd + 7)
+        return last_monday.isoformat()
+
+    if "mes passado" in t or "mês passado" in txt:
+        first = today.replace(day=1)
+        last_month = (first - timedelta(days=1)).replace(day=1)
+        return last_month.isoformat()
+
+    week_map = {
+        "segunda": 0, "terca": 1, "terça": 1, "quarta": 2,
+        "quinta": 3, "sexta": 4, "sabado": 5, "sábado": 5, "domingo": 6
+    }
+    for k, wd_target in week_map.items():
+        if k in t:
+            wd_today = today.weekday()
+            delta = (wd_today - wd_target) % 7
+            return (today - timedelta(days=delta)).isoformat()
+
     m = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b", t)
     if m:
-        d, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
-        y = int(y) if y else today.year
-        if y < 100:
-            y += 2000
+        d, mo, y = m.group(1), m.group(2), m.group(3)
+        d, mo = int(d), int(mo)
+        if y:
+            y = int(y)
+            if y < 100:
+                y += 2000
+        else:
+            y = today.year
         try:
             return date(y, mo, d).isoformat()
+        except ValueError:
+            pass
+
+    m2 = re.search(r"\bdia\s+(\d{1,2})\b", t)
+    if m2:
+        d = int(m2.group(1))
+        try:
+            return date(today.year, today.month, d).isoformat()
         except ValueError:
             pass
 
@@ -319,22 +343,32 @@ def parse_period_pt(text: str):
         s = e - timedelta(days=7)
         return s.isoformat(), e.isoformat(), "semana passada"
 
-    if re.search(r"\besse m[eê]s\b", low) or re.search(r"\beste mes\b", low):
+    if re.search(r"\besse m[eê]s\b", low):
         s = today.replace(day=1)
         e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
         return s.isoformat(), e.isoformat(), "este mês"
 
-    if re.search(r"\bm[eê]s passado\b", low) or re.search(r"\bmes passado\b", low):
+    if re.search(r"\bm[eê]s passado\b", low):
         s_atual = today.replace(day=1)
         e_passado = s_atual
         s_passado = (s_atual - timedelta(days=1)).replace(day=1)
         return s_passado.isoformat(), e_passado.isoformat(), "mês passado"
 
+    if re.search(r"\besse ano\b", low):
+        s = date(today.year, 1, 1)
+        e = date(today.year + 1, 1, 1)
+        return s.isoformat(), e.isoformat(), "este ano"
+
+    if re.search(r"\bano passado\b", low):
+        s = date(today.year - 1, 1, 1)
+        e = date(today.year, 1, 1)
+        return s.isoformat(), e.isoformat(), "ano passado"
+
     m = re.search(r"\bem\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?", low)
     if not m:
         m = re.search(r"\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))\b", low)
     if m:
-        mes = m.group(1).replace("ç","c")
+        mes = m.group(1).replace("ç", "c")
         ano = int(m.group(2)) if m.group(2) else today.year
         month_num = MONTHS_PT.get(mes, None)
         if month_num:
@@ -347,110 +381,149 @@ def parse_period_pt(text: str):
     return s.isoformat(), e.isoformat(), "este mês (padrão)"
 
 def guess_category_filter(text: str):
-    return guess_category(text)
+    low = _norm(text)
+    for pat, name in CATEGORY_RULES:
+        if re.search(pat, low):
+            return name
+    return None
 
 def guess_paid_filter(text: str):
-    return guess_payment(text)
+    low = _norm(text)
+    for label, pat in PAYMENT_SYNONYMS.items():
+        if re.search(pat, low):
+            return label
+    return None
 
 def guess_cc_filter(text: str):
     return guess_cc(text)
 
 def is_income_query(text: str):
-    return bool(re.search(r"\b(entrou|recebi|receitas?|quanto\s+entrou)\b", text, re.I))
+    return bool(re.search(r"\b(entrou|recebi|receitas?|quanto\s+entrou)\b", text or "", re.I))
 
 def is_report_intent(text: str):
-    return bool(QUERY_INTENT_RE.search(text))
+    return bool(QUERY_INTENT_RE.search(text or ""))
+
+# =====================================================================================
+#                               CC STATE (last_cc) + pending
+# =====================================================================================
+
+PENDING_BY_USER: dict[int, dict] = {}
+
+def _get_user_row(tg_user_id: int) -> dict | None:
+    r = sb.table("users").select("id,role,is_active,account_id").eq("tg_user_id", tg_user_id).limit(1).execute()
+    rows = get_or_none(r) or []
+    return rows[0] if rows else None
+
+def _get_last_cc(tg_user_id: int) -> str | None:
+    try:
+        r = sb.table("users").select("last_cc").eq("tg_user_id", tg_user_id).limit(1).execute()
+        rows = get_or_none(r) or []
+        if rows and rows[0].get("last_cc"):
+            return rows[0]["last_cc"]
+    except Exception:
+        pass
+    return None
+
+def _set_last_cc(tg_user_id: int, cc_code: str):
+    try:
+        sb.table("users").update({"last_cc": cc_code}).eq("tg_user_id", tg_user_id).execute()
+    except Exception:
+        pass
 
 # =====================================================================================
 #                               PERSISTÊNCIA
 # =====================================================================================
 
 def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
-    low = _norm(txt)
-
-    amount = money_from_text(txt)
-    if amount is None:
-        return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
-
-    # força INCOME com termos de entrada
-    if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s*mim)\b", low):
-        etype = "income"
-    else:
-        etype = "expense"
-
-    user_row = _get_user_row(tg_user_id)
-    if not user_row or not user_row.get("is_active"):
-        return False, "Usuário não autorizado. Use /start e peça autorização."
-
-    user_id = user_row["id"]
-    role = user_row["role"]
-    account_id = user_row.get("account_id") or get_default_account_id()
-
-    cat_name = guess_category(txt)
-    paid_via = guess_payment(txt)
-    dtx = parse_date_pt(txt)
-    entry_date = dtx or datetime.date.today().isoformat()
-
-    cc_code = force_cc or guess_cc(txt)
-
-    # se não veio CC no texto, tenta usar o último CC
-    used_last_cc = False
-    if not cc_code:
-        last_cc = _get_last_cc(tg_user_id)
-        if last_cc:
-            cc_code = last_cc
-            used_last_cc = True
-
-    # garante ids por CONTA
-    cat_id = ensure_category_id(account_id, cat_name)
-    cc_id = ensure_cost_center_id(account_id, cc_code) if cc_code else None
-
-    status = "approved" if role in ("owner", "partner") else "pending"
-
-    payload = {
-        "account_id": account_id,
-        "entry_date": entry_date,
-        "type": etype,
-        "amount": amount,
-        "description": txt,
-        "category_id": cat_id,
-        "cost_center_id": cc_id,
-        "paid_via": paid_via,
-        "created_by": user_id,
-        "status": status
-    }
-
+    """
+    Blindado: nunca deixa exception subir e matar o reply.
+    """
     try:
-        sb.table("entries").insert(payload).execute()
-    except Exception:
-        payload.pop("paid_via", None)
-        sb.table("entries").insert(payload).execute()
+        low = _norm(txt)
 
-    # atualiza último CC se tiver
-    if cc_code:
-        _set_last_cc(tg_user_id, cc_code)
+        amount = money_from_text(txt)
+        if amount is None:
+            return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-    return True, {
-        "amount": amount,
-        "type": etype,
-        "category": cat_name,
-        "cc": cc_code,
-        "status": status,
-        "paid_via": paid_via,
-        "entry_date": entry_date,
-        "used_last_cc": used_last_cc
-    }
+        # força INCOME com termos de entrada
+        if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s*mim)\b", low):
+            etype = "income"
+        else:
+            etype = "expense"
+
+        user_row = _get_user_row(tg_user_id)
+        if not user_row or not user_row.get("is_active"):
+            return False, "Usuário não autorizado. Use /start e peça autorização."
+
+        user_id = user_row["id"]
+        role = user_row["role"]
+        account_id = user_row.get("account_id") or get_default_account_id()
+
+        cat_name = guess_category(txt)
+        paid_via = guess_payment(txt)
+        dtx = parse_date_pt(txt)
+        entry_date = dtx or datetime.date.today().isoformat()
+
+        cc_code = force_cc or guess_cc(txt)
+
+        used_last_cc = False
+        if not cc_code:
+            last_cc = _get_last_cc(tg_user_id)
+            if last_cc:
+                cc_code = last_cc
+                used_last_cc = True
+
+        cat_id = ensure_category_id(account_id, cat_name)
+        cc_id = ensure_cost_center_id(account_id, cc_code) if cc_code else None
+
+        status = "approved" if role in ("owner", "partner") else "pending"
+
+        payload = {
+            "account_id": account_id,
+            "entry_date": entry_date,
+            "type": etype,
+            "amount": amount,
+            "description": txt,
+            "category_id": cat_id,
+            "cost_center_id": cc_id,
+            "paid_via": paid_via,
+            "created_by": user_id,
+            "status": status
+        }
+
+        try:
+            sb.table("entries").insert(payload).execute()
+        except Exception:
+            payload.pop("paid_via", None)
+            sb.table("entries").insert(payload).execute()
+
+        if cc_code:
+            _set_last_cc(tg_user_id, cc_code)
+
+        return True, {
+            "amount": amount,
+            "type": etype,
+            "category": cat_name,
+            "cc": cc_code,
+            "status": status,
+            "paid_via": paid_via,
+            "entry_date": entry_date,
+            "used_last_cc": used_last_cc
+        }
+
+    except Exception as e:
+        return False, f"Erro interno no save_entry: {type(e).__name__}: {e}"
 
 # =====================================================================================
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
 
 async def run_query_and_reply(update: Update, text: str):
+    # pega account_id do usuário que pediu relatório
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
         await update.message.reply_text("Usuário não autorizado.")
         return
-
     account_id = user_row.get("account_id") or get_default_account_id()
 
     start, end, label = parse_period_pt(text)
@@ -468,7 +541,7 @@ async def run_query_and_reply(update: Update, text: str):
     if paid:
         q = q.eq("paid_via", paid)
 
-    if cat and cat != DEFAULT_CATEGORY:
+    if cat:
         c = sb.table("categories").select("id").eq("account_id", account_id).eq("name", cat).limit(1).execute()
         cd = get_or_none(c) or []
         if cd:
@@ -484,7 +557,7 @@ async def run_query_and_reply(update: Update, text: str):
     total = sum(float(r["amount"]) for r in rows)
 
     filtros = []
-    if cat and cat != DEFAULT_CATEGORY: filtros.append(cat)
+    if cat: filtros.append(cat)
     if paid: filtros.append(paid.title())
     if cc_code: filtros.append(cc_code)
     filtros_txt = f" | Filtros: {', '.join(filtros)}" if filtros else ""
@@ -493,6 +566,81 @@ async def run_query_and_reply(update: Update, text: str):
         f"📊 Total de {'receitas' if is_income else 'gastos'} em {label}{filtros_txt}:\n*{moeda_fmt(total)}*",
         parse_mode="Markdown"
     )
+
+# =====================================================================================
+#                               PROCESSAMENTO ÚNICO (texto e áudio)
+# =====================================================================================
+
+async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str):
+    try:
+        uid = update.effective_user.id
+        user_text = (user_text or "").strip()
+        if not user_text:
+            return
+
+        # pendência esperando CC
+        if uid in PENDING_BY_USER:
+            cc = guess_cc(user_text)
+            if cc:
+                pending = PENDING_BY_USER.pop(uid)
+                ok, res = save_entry(uid, pending["txt"], force_cc=cc)
+                if ok:
+                    r = res
+                    await update.message.reply_text(
+                        f"✅ Lançado (com CC informado): {moeda_fmt(r['amount'])} • {r['category']} • {r['cc']} • {r['status']}"
+                    )
+                else:
+                    await update.message.reply_text(f"⚠️ {res}")
+                return
+
+        # seta CC sem valor
+        cc_only = guess_cc(user_text)
+        if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text):
+            _set_last_cc(uid, cc_only)
+            await update.message.reply_text(f"✅ Obra/CC atual definido: {cc_only}")
+            return
+
+        # relatório
+        if is_report_intent(user_text):
+            await run_query_and_reply(update, user_text)
+            return
+
+        # se não tem CC nem last_cc, pede confirmação
+        cc_in_text = guess_cc(user_text)
+        last_cc = _get_last_cc(uid)
+
+        if (not cc_in_text) and (not last_cc) and money_from_text(user_text) is not None:
+            PENDING_BY_USER[uid] = {"txt": user_text}
+            await update.message.reply_text(
+                "Beleza. Só me diz **qual obra/centro de custo** pra eu lançar certinho.\n"
+                "Ex: `obra do Rodrigo` ou `reforma da Ellen`.\n\n"
+                "Dica: define a obra do dia com `/obra Rodrigo`."
+            )
+            return
+
+        ok, res = save_entry(uid, user_text)
+        if ok:
+            r = res
+            label = "Receita" if r.get("type") == "income" else "Lançado"
+            extras = []
+            if r.get("entry_date"): extras.append(f"🗓️ {r['entry_date']}")
+            if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
+            if r.get("used_last_cc") and r.get("cc"): extras.append(f"📌 CC assumido: {r['cc']}")
+            tail = ("\n" + " • ".join(extras)) if extras else ""
+
+            # dica pro usuário quando assumiu CC
+            hint = ""
+            if r.get("used_last_cc") and r.get("cc"):
+                hint = "\nSe essa obra não for a certa, manda: `obra do <nome>` (que eu ajusto pro próximo)."
+
+            await update.message.reply_text(
+                f"✅ {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}{hint}"
+            )
+        else:
+            await update.message.reply_text(f"⚠️ {res}")
+
+    except Exception as e:
+        await update.message.reply_text(f"💥 Erro no processamento: {type(e).__name__}: {e}")
 
 # =====================================================================================
 #                               TELEGRAM HANDLERS
@@ -506,34 +654,33 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = get_or_none(exist) or []
 
     if not data:
-        # tenta inserir com last_cc_code = None (se coluna existir, ok; se não, supabase ignora? depende)
-        payload = {
+        sb.table("users").insert({
             "tg_user_id": u.id,
             "name": u.full_name,
             "role": "viewer",
             "is_active": False,
-            "account_id": default_account_id
-        }
-        try:
-            payload["last_cc_code"] = None
-        except Exception:
-            pass
-        sb.table("users").insert(payload).execute()
+            "account_id": default_account_id,
+            "last_cc": None
+        }).execute()
     else:
+        upd = {}
         if not data[0].get("account_id"):
-            sb.table("users").update({"account_id": default_account_id}).eq("tg_user_id", u.id).execute()
+            upd["account_id"] = default_account_id
+        if "last_cc" not in data[0]:
+            upd["last_cc"] = None
+        if upd:
+            sb.table("users").update(upd).eq("tg_user_id", u.id).execute()
 
     await update.message.reply_text(
         f"Fala, {u.first_name}! Eu sou o Boris.\n"
         f"Teu Telegram user id é: {u.id}\n"
-        f"Pede pro owner te autorizar com /autorizar {u.id} role=buyer\n\n"
-        f"Dica: define a obra atual com /obra Rodrigo"
+        f"Pede pro owner te autorizar com /autorizar {u.id} role=buyer"
     )
 
 async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-
     you = _get_user_row(u.id)
+
     if not you or you.get("role") != "owner" or not you.get("is_active"):
         await update.message.reply_text("Somente o owner pode autorizar usuários.")
         return
@@ -562,249 +709,152 @@ async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Define a obra atual (CC) do usuário.
-    Ex: /obra Rodrigo  -> OBRA_RODRIGO
-        /obra obra do Rodrigo
-        /obra reforma Ellen
+    /obra Rodrigo  -> define CC atual (OBRA_RODRIGO)
+    /obra Ellen    -> define CC atual (OBRA_ELLEN)
     """
-    raw = " ".join(context.args).strip()
-    if not raw:
-        await update.message.reply_text("Uso: /obra Rodrigo  (ou /obra reforma Ellen, /obra container Castanhal)")
+    name = " ".join(context.args).strip()
+    if not name:
+        await update.message.reply_text("Uso: /obra <nome>. Ex: /obra Rodrigo")
         return
-
-    # tenta ler tipo no texto; se usuário mandar só "Rodrigo", assume OBRA
-    cc = guess_cc(raw)
-    if not cc:
-        cc = f"OBRA_{_slugify_name(raw)}"
-
+    cc = f"OBRA_{_slugify_name(name)}"
     _set_last_cc(update.effective_user.id, cc)
-    await update.message.reply_text(f"✅ Obra/CC atual definido: {cc}")
+    await update.message.reply_text(f"✅ Obra/CC atual definido:\n{cc}")
 
 async def cmd_despesa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = " ".join(context.args) if context.args else (update.message.text or "")
-    ok, res = save_entry(update.effective_user.id, txt)
-    if ok:
-        r = res
-        extras = []
-        if r.get("entry_date"): extras.append(f"🗓️ {r['entry_date']}")
-        if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
-        if r.get("used_last_cc"): extras.append(f"📌 CC assumido: {r['cc']}")
-        tail = ("\n" + " • ".join(extras)) if extras else ""
-        await update.message.reply_text(
-            f"✅ Lançado: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}"
-        )
-    else:
-        await update.message.reply_text(f"⚠️ {res}")
+    txt = " ".join(context.args).strip()
+    if not txt:
+        await update.message.reply_text("Uso: /despesa <texto>. Ex: /despesa 200 eletricista pix obra do Rodrigo")
+        return
+    await process_user_text(update, context, txt)
 
 async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = " ".join(context.args) if context.args else (update.message.text or "")
-    ok, res = save_entry(update.effective_user.id, "receita " + txt)
-    if ok:
-        r = res
-        extras = []
-        if r.get("entry_date"): extras.append(f"🗓️ {r['entry_date']}")
-        if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
-        if r.get("used_last_cc"): extras.append(f"📌 CC assumido: {r['cc']}")
-        tail = ("\n" + " • ".join(extras)) if extras else ""
-        await update.message.reply_text(
-            f"✅ Receita: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'}{tail}"
-        )
-    else:
-        await update.message.reply_text(f"⚠️ {res}")
+    txt = " ".join(context.args).strip()
+    if not txt:
+        await update.message.reply_text("Uso: /receita <texto>. Ex: /receita 1200 pagamento Joana pix")
+        return
+    await process_user_text(update, context, "receita " + txt)
 
 async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Resumo do mês por categoria e CC, filtrando por CONTA.
+    Resumo do mês por categoria e CC (despesas) filtrando por conta.
     """
-    user_row = _get_user_row(update.effective_user.id)
-    if not user_row or not user_row.get("is_active"):
-        await update.message.reply_text("Usuário não autorizado.")
-        return
-    account_id = user_row.get("account_id") or get_default_account_id()
+    try:
+        user_row = _get_user_row(update.effective_user.id)
+        if not user_row or not user_row.get("is_active"):
+            await update.message.reply_text("Usuário não autorizado.")
+            return
+        account_id = user_row.get("account_id") or get_default_account_id()
 
-    today = datetime.date.today()
-    month_start = today.replace(day=1).isoformat()
-    month_end = (today.replace(day=28) + timedelta(days=4)).replace(day=1).isoformat()
+        today = datetime.date.today()
+        month_start = today.replace(day=1).isoformat()
+        month_end = (today.replace(day=28) + timedelta(days=4)).replace(day=1).isoformat()
 
-    resp = sb.table("entries").select(
-        "amount,category_id,cost_center_id,type,entry_date,status"
-    ).eq("account_id", account_id) \
-     .gte("entry_date", month_start).lt("entry_date", month_end) \
-     .eq("type", "expense").execute()
+        resp = sb.table("entries").select(
+            "amount,category_id,cost_center_id,type,entry_date,status"
+        ).eq("account_id", account_id) \
+         .gte("entry_date", month_start).lt("entry_date", month_end) \
+         .eq("type", "expense").execute()
 
-    rows = get_or_none(resp) or []
+        rows = get_or_none(resp) or []
 
-    cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
-    ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
-    cats = {r["id"]: r["name"] for r in cats_rows}
-    ccs  = {r["id"]: r["code"] for r in ccs_rows}
+        cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
+        ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
+        cats = {r["id"]: r["name"] for r in cats_rows}
+        ccs  = {r["id"]: r["code"] for r in ccs_rows}
 
-    by_cat = defaultdict(float)
-    by_cc  = defaultdict(float)
-    total = 0.0
-    for r in rows:
-        v = float(r["amount"])
-        total += v
-        by_cat[cats.get(r["category_id"], "Sem categoria")] += v
-        by_cc[ccs.get(r["cost_center_id"], "Sem CC")] += v
+        by_cat = defaultdict(float)
+        by_cc  = defaultdict(float)
+        total = 0.0
+        for r in rows:
+            v = float(r["amount"])
+            total += v
+            by_cat[cats.get(r["category_id"], "Sem categoria")] += v
+            by_cc[ccs.get(r["cost_center_id"], "Sem CC")] += v
 
-    def fmt(d):
-        items = sorted(d.items(), key=lambda x: x[1], reverse=True)
-        return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
+        def fmt(d):
+            items = sorted(d.items(), key=lambda x: x[1], reverse=True)
+            return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
 
-    msg = (
-        f"📊 Resumo do mês\n"
-        f"Total: {moeda_fmt(total)}\n\n"
-        f"Por categoria:\n{fmt(by_cat)}\n\n"
-        f"Por centro de custo:\n{fmt(by_cc)}"
-    )
-    await update.message.reply_markdown(msg)
+        msg = (
+            f"📊 Resumo do mês\n"
+            f"Total: {moeda_fmt(total)}\n\n"
+            f"Por categoria:\n{fmt(by_cat)}\n\n"
+            f"Por centro de custo:\n{fmt(by_cc)}"
+        )
+        await update.message.reply_markdown(msg)
+
+    except Exception as e:
+        await update.message.reply_text(f"💥 Erro no /relatorio: {type(e).__name__}: {e}")
 
 # -------------------- TEXTO --------------------
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = (update.message.text or "").strip()
-    uid = update.effective_user.id
+    await process_user_text(update, context, update.message.text or "")
 
-    # 1) Se existe pendência esperando CC, e o usuário mandou uma obra/reforma/container -> completa e salva
-    if uid in PENDING_BY_USER:
-        cc = guess_cc(user_text)
-        if cc:
-            pending = PENDING_BY_USER.pop(uid)
-            ok, res = save_entry(uid, pending["txt"], force_cc=cc)
-            if ok:
-                r = res
-                await update.message.reply_text(
-                    f"✅ Lançado (com CC informado): {moeda_fmt(r['amount'])} • {r['category']} • {r['cc']} • {r['status']}"
-                )
-            else:
-                await update.message.reply_text(f"⚠️ {res}")
-            return
-
-    # 2) Comando rápido: se o cara mandar só "obra do rodrigo" (sem /obra), define CC atual
-    cc_only = guess_cc(user_text)
-    if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text):
-        _set_last_cc(uid, cc_only)
-        await update.message.reply_text(f"✅ Obra/CC atual definido: {cc_only}")
-        return
-
-    # 3) Consulta/relatório
-    if is_report_intent(user_text):
-        await run_query_and_reply(update, user_text)
-        return
-
-    # 4) Lançamento normal
-    # se não tiver CC no texto e não tiver last_cc, segura e pergunta
-    cc_in_text = guess_cc(user_text)
-    last_cc = _get_last_cc(uid)
-    if (not cc_in_text) and (not last_cc):
-        # só entra nesse modo se realmente parece um lançamento (tem valor)
-        if money_from_text(user_text) is not None:
-            PENDING_BY_USER[uid] = {"txt": user_text}
-            await update.message.reply_text(
-                "Beleza. Só me diz *qual obra/centro de custo* pra eu lançar certinho.\n"
-                "Ex: obra do Rodrigo ou reforma da Ellen.\n\n"
-                "Dica: podes setar a obra do dia com /obra Rodrigo."
-            )
-            return
-
-    ok, res = save_entry(uid, user_text)
-    if ok:
-        r = res
-        label = "Receita" if r.get("type") == "income" else "Lançado"
-        extras = []
-        if r.get("entry_date"):
-            extras.append(f"🗓️ {r['entry_date']}")
-        if r.get("paid_via"):
-            extras.append(f"💳 {r['paid_via']}")
-        if r.get("used_last_cc"):
-            extras.append(f"📌 CC assumido: {r['cc']}")
-        tail = ("\n" + " • ".join(extras)) if extras else ""
-        await update.message.reply_text(
-            f"✅ {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}"
-        )
-        # se assumiu CC, dá chance de corrigir sem stress
-        if r.get("used_last_cc"):
-            await update.message.reply_text("Se essa obra não for a certa, manda: obra do <nome> (que eu ajusto pro próximo).")
-    else:
-        await update.message.reply_text(
-            "Me manda algo tipo:\n"
-            "• 'paguei 200 no encanador da obra do Rodrigo (pix)'\n"
-            "• 'recebi 1200 da Joana (pix)'\n"
-            "• 'comprei 30 de quentinhas (dinheiro)'\n"
-            "Ou define a obra do dia: /obra Rodrigo"
-        )
-
-# -------------------- ÁUDIO (voice/audio) — robusto com /tmp --------------------
+# -------------------- ÁUDIO (voice/audio) — robusto + debug --------------------
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not oa_client:
         await update.message.reply_text("Whisper não está configurado (OPENAI_API_KEY ausente).")
         return
 
-    tgfile = None
-    ext = ".audio"
-
-    if update.message.voice:
-        tgfile = await update.message.voice.get_file()
-        ext = ".oga"
-    elif update.message.audio:
-        tgfile = await update.message.audio.get_file()
-        mime = (update.message.audio.mime_type or "").lower()
-        if "mpeg" in mime or "mp3" in mime:
-            ext = ".mp3"
-        elif "ogg" in mime:
-            ext = ".ogg"
-        elif "wav" in mime:
-            ext = ".wav"
-        else:
-            ext = ".audio"
-    else:
-        await update.message.reply_text("Não recebi um áudio válido.")
-        return
-
-    local_path = f"/tmp/{uuid.uuid4().hex}{ext}"
-    await tgfile.download_to_drive(local_path)
-
     try:
-        text_out = None
+        tgfile = None
+        ext = ".audio"
+
+        if update.message.voice:
+            tgfile = await update.message.voice.get_file()
+            ext = ".oga"
+        elif update.message.audio:
+            tgfile = await update.message.audio.get_file()
+            mime = (update.message.audio.mime_type or "").lower()
+            if "mpeg" in mime or "mp3" in mime:
+                ext = ".mp3"
+            elif "ogg" in mime:
+                ext = ".ogg"
+            elif "wav" in mime:
+                ext = ".wav"
+            else:
+                ext = ".audio"
+        else:
+            await update.message.reply_text("Não recebi um áudio válido.")
+            return
+
+        local_path = f"/tmp/{uuid.uuid4().hex}{ext}"
+        await tgfile.download_to_drive(local_path)
+
         try:
-            with open(local_path, "rb") as fh:
-                resp = oa_client.audio.transcriptions.create(
-                    model="gpt-4o-mini-transcribe",
-                    file=fh,
-                    language="pt"
-                )
-            text_out = (getattr(resp, "text", "") or "").strip()
-        except Exception:
-            with open(local_path, "rb") as fh:
-                resp = oa_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=fh,
-                    language="pt"
-                )
-            text_out = (getattr(resp, "text", "") or "").strip()
+            try:
+                with open(local_path, "rb") as fh:
+                    resp = oa_client.audio.transcriptions.create(
+                        model="gpt-4o-mini-transcribe",
+                        file=fh,
+                        language="pt"
+                    )
+                text_out = (getattr(resp, "text", "") or "").strip()
+            except Exception:
+                with open(local_path, "rb") as fh:
+                    resp = oa_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=fh,
+                        language="pt"
+                    )
+                text_out = (getattr(resp, "text", "") or "").strip()
+        finally:
+            try:
+                os.remove(local_path)
+            except Exception:
+                pass
+
+        if not text_out:
+            await update.message.reply_text("Não consegui entender o áudio.")
+            return
+
+        await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
+
+        # Processa como texto (e se der erro, aparece no chat)
+        await process_user_text(update, context, text_out)
+
     except Exception as e:
-        await update.message.reply_text(f"Não consegui transcrever o áudio. Erro: {e}")
-        try:
-            os.remove(local_path)
-        except Exception:
-            pass
-        return
-    finally:
-        try:
-            os.remove(local_path)
-        except Exception:
-            pass
-
-    if not text_out:
-        await update.message.reply_text("Não consegui entender o áudio.")
-        return
-
-    await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
-
-    # usa o mesmo fluxo do texto (inclui pendência e pergunta de CC)
-    fake_update = update  # só para reutilizar a lógica
-    fake_update.message.text = text_out
-    await plain_text(fake_update, context)
+        await update.message.reply_text(f"💥 Erro no handle_audio: {type(e).__name__}: {e}")
 
 # =====================================================================================
 #                               TELEGRAM APP
