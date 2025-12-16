@@ -300,79 +300,104 @@ def parse_period_pt(text: str):
     low = _norm(text)
     today = date.today()
 
-    if re.search(r"\bhoje\b", low):
+    NUM_WORDS = {
+        "um": 1, "uma": 1,
+        "dois": 2, "duas": 2,
+        "tres": 3, "três": 3,
+        "quatro": 4,
+        "cinco": 5,
+        "seis": 6,
+        "sete": 7,
+        "oito": 8,
+        "nove": 9,
+        "dez": 10,
+        "quinze": 15,
+        "vinte": 20,
+        "trinta": 30
+    }
+
+    def word_to_number(w):
+        return NUM_WORDS.get(w)
+
+    # ----------------- última quinzena -----------------
+    if re.search(r"\b(ultima|última)\s+quinzena\b", low):
+        s = today - timedelta(days=15)
+        e = today + timedelta(days=1)
+        return s.isoformat(), e.isoformat(), "última quinzena"
+
+    # ----------------- últimos X dias (número) -----------------
+    m = re.search(r"\b(ultim[oa]s?|nos?\s+ultim[oa]s?)\s+(\d{1,3})\s+dias?\b", low)
+    if m:
+        n = int(m.group(2))
+        s = today - timedelta(days=n)
+        e = today + timedelta(days=1)
+        return s.isoformat(), e.isoformat(), f"últimos {n} dias"
+
+    # ----------------- últimos X dias (por extenso) -----------------
+    m = re.search(r"\b(ultim[oa]s?)\s+([a-zçãõ]+)\s+dias?\b", low)
+    if m:
+        n = word_to_number(m.group(2))
+        if n:
+            s = today - timedelta(days=n)
+            e = today + timedelta(days=1)
+            return s.isoformat(), e.isoformat(), f"últimos {n} dias"
+
+    # ----------------- últimas X semanas -----------------
+    m = re.search(r"\b(ultim[oa]s?)\s+(\d+|[a-zçãõ]+)\s+semanas?\b", low)
+    if m:
+        raw = m.group(2)
+        n = int(raw) if raw.isdigit() else word_to_number(raw)
+        if n:
+            s = today - timedelta(days=7*n)
+            e = today + timedelta(days=1)
+            return s.isoformat(), e.isoformat(), f"últimas {n} semanas"
+
+    # ----------------- últimos X meses -----------------
+    m = re.search(r"\b(ultim[oa]s?)\s+(\d+|[a-zçãõ]+)\s+mes(es)?\b", low)
+    if m:
+        raw = m.group(2)
+        n = int(raw) if raw.isdigit() else word_to_number(raw)
+        if n:
+            s = today - timedelta(days=30*n)  # aproximação aceitável
+            e = today + timedelta(days=1)
+            return s.isoformat(), e.isoformat(), f"últimos {n} meses"
+
+    # ----------------- hoje / ontem -----------------
+    if "hoje" in low:
         return today.isoformat(), (today + timedelta(days=1)).isoformat(), "hoje"
 
-    if re.search(r"\bontem\b", low):
+    if "ontem" in low:
         y = today - timedelta(days=1)
         return y.isoformat(), today.isoformat(), "ontem"
 
-    # aceita: "essa semana", "nessa semana", "esta semana", "nesta semana"
-    if re.search(r"\b(essa|nesta|nessa|esta)\s+semana\b", low):
+    # ----------------- semana -----------------
+    if re.search(r"\b(essa|nesta|nessa|esta|dessa)\s+semana\b", low):
         s = _first_day_of_week(today)
         e = _last_day_of_week(today)
         return s.isoformat(), e.isoformat(), "essa semana"
 
-    if re.search(r"\bsemana\s+passada\b", low):
+    if "semana passada" in low:
         e = _first_day_of_week(today)
         s = e - timedelta(days=7)
         return s.isoformat(), e.isoformat(), "semana passada"
 
-    # aceita: "esse mês", "nesse mês", "este mês", "neste mês"
-    if re.search(r"\b(esse|este|nesse|neste)\s+m[eê]s\b", low):
+    # ----------------- mês -----------------
+    if re.search(r"\b(esse|este|nesse|neste|desse)\s+m[eê]s\b", low):
         s = today.replace(day=1)
         e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
         return s.isoformat(), e.isoformat(), "este mês"
 
-    if re.search(r"\bm[eê]s\s+passado\b", low):
+    if "mes passado" in low or "mês passado" in low:
         s_atual = today.replace(day=1)
         e_passado = s_atual
         s_passado = (s_atual - timedelta(days=1)).replace(day=1)
         return s_passado.isoformat(), e_passado.isoformat(), "mês passado"
 
-    # mês específico
-    m = re.search(r"\bem\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?", low)
-    if m:
-        mes = m.group(1).replace("ç", "c")
-        ano = int(m.group(2)) if m.group(2) else today.year
-        month_num = MONTHS_PT.get(mes, None)
-        if month_num:
-            s = date(ano, month_num, 1)
-            e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
-            return s.isoformat(), e.isoformat(), f"{m.group(1).title()} {ano}"
-
-    # padrão: mês atual
+    # ----------------- fallback -----------------
     s = today.replace(day=1)
     e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
     return s.isoformat(), e.isoformat(), "este mês (padrão)"
 
-def guess_category_filter(text: str):
-    low = _norm(text)
-    for pat, name in CATEGORY_RULES:
-        if re.search(pat, low):
-            return name
-    return None
-
-def guess_paid_filter(text: str):
-    low = _norm(text)
-    for label, pat in PAYMENT_SYNONYMS.items():
-        if re.search(pat, low):
-            return label
-    return None
-
-def guess_cc_filter(text: str):
-    return guess_cc(text)
-
-def is_income_query(text: str):
-    # “quanto entrou/recebi”, “receitas”, etc.
-    t = _norm(text or "")
-    return bool(re.search(r"\b(entrou|recebi|receitas?|entradas?|quanto\s+entrou|quanto\s+recebi)\b", t, re.I))
-
-def is_report_intent(text: str):
-    return bool(QUERY_INTENT_RE.search(text or ""))
-
-def is_saldo_intent(text: str):
-    return bool(SALDO_INTENT_RE.search(text or ""))
 
 # =====================================================================================
 #                               CC STATE (last_cc) + pending
