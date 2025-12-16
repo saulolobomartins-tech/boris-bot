@@ -528,11 +528,68 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         }
 
     except Exception as e:
-        return False, f"Erro interno no save_entry: {type(e)._name_}: {e}"
+        return False, f"Erro interno no save_entry: {type(e).__name__}: {e}"
 
 # =====================================================================================
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
+
+# =================== NOVO: /resumo (semanal) ===================
+async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_row = _get_user_row(update.effective_user.id)
+        if not user_row or not user_row.get("is_active"):
+            await update.message.reply_text("Usuário não autorizado.")
+            return
+
+        account_id = user_row.get("account_id") or get_default_account_id()
+
+        today = datetime.date.today()
+        start = _first_day_of_week(today).isoformat()
+        end = (_first_day_of_week(today) + timedelta(days=7)).isoformat()
+        label = "essa semana"
+
+        resp = sb.table("entries").select(
+            "amount,category_id,cost_center_id,type"
+        ).eq("account_id", account_id) \
+         .gte("entry_date", start).lt("entry_date", end) \
+         .eq("type", "expense").execute()
+
+        rows = get_or_none(resp) or []
+        if not rows:
+            await update.message.reply_text("📊 Nenhum gasto registrado essa semana.")
+            return
+
+        cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
+        ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
+        cats = {r["id"]: r["name"] for r in cats_rows}
+        ccs  = {r["id"]: r["code"] for r in ccs_rows}
+
+        by_cat = defaultdict(float)
+        by_cc  = defaultdict(float)
+        total = 0.0
+        for r in rows:
+            v = float(r["amount"])
+            total += v
+            by_cat[cats.get(r["category_id"], "Sem categoria")] += v
+            by_cc[ccs.get(r["cost_center_id"], "Sem CC")] += v
+
+        def top_fmt(d, limit=5):
+            items = sorted(d.items(), key=lambda x: x[1], reverse=True)[:limit]
+            return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
+
+        msg = (
+            f"📊 *Resumo semanal — despesas*\n"
+            f"Período: {label}\n"
+            f"——————————————\n"
+            f"Total gasto: *{moeda_fmt(total)}*\n\n"
+            f"Top categorias:\n{top_fmt(by_cat)}\n\n"
+            f"Top centros de custo:\n{top_fmt(by_cc)}"
+        )
+        await update.message.reply_markdown(msg)
+
+    except Exception as e:
+        await update.message.reply_text(f"💥 Erro no /resumo: {type(e).__name__}: {e}")
 
 async def run_query_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -712,7 +769,7 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             )
 
     except Exception as e:
-        await update.message.reply_text(f"💥 Erro no processamento: {type(e)._name_}: {e}")
+        await update.message.reply_text(f"💥 Erro no processamento: {type(e).__name__}: {e}")
 
 # =====================================================================================
 #                               TELEGRAM HANDLERS
@@ -855,7 +912,7 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_markdown(msg)
 
     except Exception as e:
-        await update.message.reply_text(f"💥 Erro no /relatorio: {type(e)._name_}: {e}")
+        await update.message.reply_text(f"💥 Erro no /relatorio: {type(e).__name__}: {e}")
 
 # -------------------- TEXTO --------------------
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -924,7 +981,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_user_text(update, context, text_out)
 
     except Exception as e:
-        msg = f"💥 Erro no handle_audio: {type(e)._name_}: {e}"
+        msg = f"💥 Erro no handle_audio: {type(e).__name__}: {e}"
         if "timed out" in str(e).lower() or "timeout" in str(e).lower():
             msg += "\n\nDica: manda de novo um áudio mais curto (até ~10s) ou manda em texto."
         await update.message.reply_text(msg)
@@ -942,6 +999,7 @@ tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
 tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("saldo", cmd_saldo))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
+tg_app.add_handler(CommandHandler("resumo", cmd_resumo))  # NOVO ✅
 
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
