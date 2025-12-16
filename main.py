@@ -134,61 +134,24 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
 # =====================================================================================
 
 CATEGORY_RULES = [
-    # Mão de obra / serviços
     (r"\b(mao\s*de\s*obra|m[aã]o\s*de\s*obra|diari(a|as)|pedreir|ajudant|servente|marceneir|soldador|aplicador)\b", "Mão de Obra"),
-
-    # Elétrica
     (r"\b(eletricist|eletric(a|o)?|fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric)\b", "Elétrico"),
-
-    # Hidráulica / hidrossanitário (turbinado)
     (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanador|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|pvc\b|joelho|te\b|luva\b|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba|sifao|sifão)\b", "Hidráulico"),
-
-    # Drywall / gesso
     (r"\b(drywall|forro|gesso|placa\s*acartonad)\b", "Drywall/Gesso"),
-
-    # Pintura
     (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray)\b", "Pintura"),
-
-    # Estrutura / fundação / alvenaria (turbinado)
     (r"\b(fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento)\b", "Estrutura/Alvenaria"),
-
-    # Cobertura
     (r"\b(telha|calha|rufo|cumeeira|aluminio|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
-
-    # Acabamento (turbinado)
     (r"\b(granito|porcelanato|piso|rodape|revestimento|rejunte|massa\s*acrilica|silicone|acabamento|azulejo)\b", "Acabamento"),
-
-    # Esquadrias / vidro
     (r"\b(porta(s)?|janela(s)?|vidro|esquadria|fechadur(a|as)|dobradi[cç]a|temperado|kit\s*porta)\b", "Esquadrias/Vidro"),
-
-    # Impermeabilização
     (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
-
-    # Ferragens / consumíveis
     (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
-
-    # Ferramentas
     (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
-
-    # Logística
     (r"\b(uber|frete|entrega|logistic(a|o)?|carretinha|transport(e|adora)?)\b", "Logística"),
-
-    # Combustível
     (r"\b(combust(iv|í)vel|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto)\b", "Combustível"),
-
-    # Equipamentos
     (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|munck|plataforma|guindaste)\b", "Equipamentos"),
-
-    # Marketing
     (r"\b(trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio)\b", "Marketing"),
-
-    # Custos fixos
     (r"\b(aluguel|internet|energia|conta\s*de\s*luz|conta\s*de\s*agua|agua|telefone|contabilidade|escritorio)\b", "Custos Fixos"),
-
-    # Taxas / financeiro
     (r"\b(taxa|emolumento|cartorio|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof)\b", "Taxas/Financeiro"),
-
-    # Alimentação (singular/plural + gírias)
     (r"\b(comida(s)?|refeic(a|ã)o|refei[cç][oõ]es|lanche(s)?|marmit(a|as)|quentinha(s)?|almo[cç]o(s)?|jantar(es)?|restaurante(s)?|cafe|café)\b", "Alimentação"),
 ]
 DEFAULT_CATEGORY = "Outros"
@@ -206,7 +169,6 @@ MONTHS_PT = {
     "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
 }
 
-# >>>>>>>>>>>> AQUI É A CORREÇÃO PRINCIPAL (consultas) <<<<<<<<<<<<
 QUERY_INTENT_RE = re.compile(
     r"\b("
     r"quanto\s+(eu\s+)?gastei|"
@@ -235,7 +197,7 @@ def money_from_text(txt: str):
     raw = m.group(0).replace(".", "").replace(",", ".")
     try:
         return round(float(raw), 2)
-    except:
+    except Exception:
         return None
 
 def guess_payment(txt: str):
@@ -258,13 +220,7 @@ def _slugify_name(name: str) -> str:
     return s.upper()
 
 def guess_cc(txt: str) -> str | None:
-    """
-    Reconhece: 'obra do rodrigo', 'na obra do rodrigo', 'reforma da joana', 'container de castanhal', etc.
-    Retorna: OBRA_RODRIGO / REFORMA_JOANA / CONTAINER_CASTANHAL
-    """
     t = _norm(txt)
-
-    # aceita "na/no" antes
     m = re.search(r"\b(?:na|no)?\s*(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
     if m:
         tipo = m.group(1)
@@ -280,7 +236,6 @@ def guess_cc(txt: str) -> str | None:
 def parse_date_pt(txt: str) -> str | None:
     t = _norm(txt)
     today = date.today()
-
     if "hoje" in t: return today.isoformat()
     if "ontem" in t: return (today - timedelta(days=1)).isoformat()
     if "anteontem" in t: return (today - timedelta(days=2)).isoformat()
@@ -294,9 +249,6 @@ def _last_day_of_week(d: date):
     return _first_day_of_week(d) + timedelta(days=7)
 
 def parse_period_pt(text: str):
-    """
-    Retorna (start_date_iso, end_date_iso_exclusive, label)
-    """
     low = _norm(text)
     today = date.today()
 
@@ -319,13 +271,11 @@ def parse_period_pt(text: str):
     def word_to_number(w):
         return NUM_WORDS.get(w)
 
-    # ----------------- última quinzena -----------------
     if re.search(r"\b(ultima|última)\s+quinzena\b", low):
         s = today - timedelta(days=15)
         e = today + timedelta(days=1)
         return s.isoformat(), e.isoformat(), "última quinzena"
 
-    # ----------------- últimos X dias (número) -----------------
     m = re.search(r"\b(ultim[oa]s?|nos?\s+ultim[oa]s?)\s+(\d{1,3})\s+dias?\b", low)
     if m:
         n = int(m.group(2))
@@ -333,7 +283,6 @@ def parse_period_pt(text: str):
         e = today + timedelta(days=1)
         return s.isoformat(), e.isoformat(), f"últimos {n} dias"
 
-    # ----------------- últimos X dias (por extenso) -----------------
     m = re.search(r"\b(ultim[oa]s?)\s+([a-zçãõ]+)\s+dias?\b", low)
     if m:
         n = word_to_number(m.group(2))
@@ -342,7 +291,6 @@ def parse_period_pt(text: str):
             e = today + timedelta(days=1)
             return s.isoformat(), e.isoformat(), f"últimos {n} dias"
 
-    # ----------------- últimas X semanas -----------------
     m = re.search(r"\b(ultim[oa]s?)\s+(\d+|[a-zçãõ]+)\s+semanas?\b", low)
     if m:
         raw = m.group(2)
@@ -352,17 +300,15 @@ def parse_period_pt(text: str):
             e = today + timedelta(days=1)
             return s.isoformat(), e.isoformat(), f"últimas {n} semanas"
 
-    # ----------------- últimos X meses -----------------
     m = re.search(r"\b(ultim[oa]s?)\s+(\d+|[a-zçãõ]+)\s+mes(es)?\b", low)
     if m:
         raw = m.group(2)
         n = int(raw) if raw.isdigit() else word_to_number(raw)
         if n:
-            s = today - timedelta(days=30*n)  # aproximação aceitável
+            s = today - timedelta(days=30*n)
             e = today + timedelta(days=1)
             return s.isoformat(), e.isoformat(), f"últimos {n} meses"
 
-    # ----------------- hoje / ontem -----------------
     if "hoje" in low:
         return today.isoformat(), (today + timedelta(days=1)).isoformat(), "hoje"
 
@@ -370,7 +316,6 @@ def parse_period_pt(text: str):
         y = today - timedelta(days=1)
         return y.isoformat(), today.isoformat(), "ontem"
 
-    # ----------------- semana -----------------
     if re.search(r"\b(essa|nesta|nessa|esta|dessa)\s+semana\b", low):
         s = _first_day_of_week(today)
         e = _last_day_of_week(today)
@@ -381,7 +326,6 @@ def parse_period_pt(text: str):
         s = e - timedelta(days=7)
         return s.isoformat(), e.isoformat(), "semana passada"
 
-    # ----------------- mês -----------------
     if re.search(r"\b(esse|este|nesse|neste|desse)\s+m[eê]s\b", low):
         s = today.replace(day=1)
         e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -393,11 +337,40 @@ def parse_period_pt(text: str):
         s_passado = (s_atual - timedelta(days=1)).replace(day=1)
         return s_passado.isoformat(), e_passado.isoformat(), "mês passado"
 
-    # ----------------- fallback -----------------
     s = today.replace(day=1)
     e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
     return s.isoformat(), e.isoformat(), "este mês (padrão)"
 
+# =====================================================================================
+#               >>>>>>> FUNÇÕES QUE ESTAVAM FALTANDO (FILTROS/INTENTS) <<<<<<<
+# =====================================================================================
+
+def guess_category_filter(text: str):
+    low = _norm(text)
+    for pat, name in CATEGORY_RULES:
+        if re.search(pat, low):
+            return name
+    return None
+
+def guess_paid_filter(text: str):
+    low = _norm(text)
+    for label, pat in PAYMENT_SYNONYMS.items():
+        if re.search(pat, low):
+            return label
+    return None
+
+def guess_cc_filter(text: str):
+    return guess_cc(text)
+
+def is_income_query(text: str):
+    t = _norm(text or "")
+    return bool(re.search(r"\b(entrou|recebi|receitas?|entradas?|quanto\s+entrou|quanto\s+recebi|quanto\s+ja\s+recebi)\b", t, re.I))
+
+def is_report_intent(text: str):
+    return bool(QUERY_INTENT_RE.search(text or ""))
+
+def is_saldo_intent(text: str):
+    return bool(SALDO_INTENT_RE.search(text or ""))
 
 # =====================================================================================
 #                               CC STATE (last_cc) + pending
@@ -438,7 +411,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         if amount is None:
             return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-        # força INCOME com termos de entrada
         if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s*mim)\b", low):
             etype = "income"
         else:
@@ -560,9 +532,6 @@ async def run_query_and_reply(update: Update, text: str):
     )
 
 async def run_balance_and_reply(update: Update, text: str):
-    """
-    Saldo = receitas - despesas no período (com filtro de CC se tiver).
-    """
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
         await update.message.reply_text("Usuário não autorizado.")
@@ -595,7 +564,8 @@ async def run_balance_and_reply(update: Update, text: str):
         f"——————————————\n"
         f"Saldo: {moeda_fmt(saldo)}"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    remind = "\n\nDica: se você pediu 'semana', diga: 'nessa semana'."
+    await update.message.reply_text(msg + remind, parse_mode="Markdown")
 
 # =====================================================================================
 #                               PROCESSAMENTO ÚNICO (texto e áudio)
@@ -608,7 +578,6 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if not user_text:
             return
 
-        # pendência esperando CC
         if uid in PENDING_BY_USER:
             cc = guess_cc(user_text)
             if cc:
@@ -623,31 +592,27 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     await update.message.reply_text(f"⚠️ {res}")
                 return
 
-        # seta CC sem valor (ex: "obra do Rodrigo")
         cc_only = guess_cc(user_text)
         if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text):
             _set_last_cc(uid, cc_only)
             await update.message.reply_text(f"✅ Obra/CC atual definido: {cc_only}")
             return
 
-        # saldo
         if is_saldo_intent(user_text):
             await run_balance_and_reply(update, user_text)
             return
 
-        # relatório/consulta (gastos/receitas)
         if is_report_intent(user_text):
             await run_query_and_reply(update, user_text)
             return
 
-        # se não tem CC nem last_cc e tem valor -> pede CC
         cc_in_text = guess_cc(user_text)
         last_cc = _get_last_cc(uid)
 
         if (not cc_in_text) and (not last_cc) and money_from_text(user_text) is not None:
             PENDING_BY_USER[uid] = {"txt": user_text}
             await update.message.reply_text(
-                "Beleza. Só me diz *qual obra/centro de custo* pra eu lançar certinho.\n"
+                "Beleza. Só me diz qual obra/centro de custo pra eu lançar certinho.\n"
                 "Ex: obra do Rodrigo ou reforma da Ellen.\n\n"
                 "Dica: define a obra do dia com /obra Rodrigo."
             )
@@ -677,7 +642,8 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "• paguei 200 no eletricista (pix) obra do Rodrigo\n"
                 "• recebi 1200 da Joana pix\n"
                 "• quanto entrou nesse mês?\n"
-                "• saldo atual desse mês"
+                "• saldo atual desse mês\n"
+                "• saldo nos últimos 15 dias"
             )
 
     except Exception as e:
@@ -749,9 +715,6 @@ async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Usuário {target} autorizado como {role} ✅")
 
 async def cmd_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /obra Rodrigo  -> define CC atual (OBRA_RODRIGO)
-    """
     name = " ".join(context.args).strip()
     if not name:
         await update.message.reply_text("Uso: /obra <nome>. Ex: /obra Rodrigo")
@@ -776,13 +739,9 @@ async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args).strip()
-    # se não passar nada -> saldo do mês atual
     await run_balance_and_reply(update, txt or "este mês")
 
 async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Resumo do mês por categoria e CC (despesas) filtrando por conta.
-    """
     try:
         user_row = _get_user_row(update.effective_user.id)
         if not user_row or not user_row.get("is_active"):
@@ -898,7 +857,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_user_text(update, context, text_out)
 
     except Exception as e:
-        # quando der timeout, pelo menos o usuário entende o que fazer
         msg = f"💥 Erro no handle_audio: {type(e)._name_}: {e}"
         if "timed out" in str(e).lower() or "timeout" in str(e).lower():
             msg += "\n\nDica: manda de novo um áudio mais curto (até ~10s) ou manda em texto."
