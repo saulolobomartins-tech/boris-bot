@@ -55,43 +55,116 @@ def get_or_none(res):
     return res.data if hasattr(res, "data") else res
 
 # =====================================================================================
+#                              MULTI-TENANT (account_id)
+# =====================================================================================
+
+_DEFAULT_ACCOUNT_ID = None
+
+def get_default_account_id() -> str:
+    """
+    Busca (ou cria) uma conta padrão. Evita criar conta “solta”.
+    Depende de tabela accounts(name, plan, id).
+    """
+    global _DEFAULT_ACCOUNT_ID
+    if _DEFAULT_ACCOUNT_ID:
+        return _DEFAULT_ACCOUNT_ID
+
+    res = sb.table("accounts").select("id").eq("name", "DEFAULT ACCOUNT").limit(1).execute()
+    rows = get_or_none(res) or []
+    if rows:
+        _DEFAULT_ACCOUNT_ID = rows[0]["id"]
+        return _DEFAULT_ACCOUNT_ID
+
+    # cria se não existir
+    ins = sb.table("accounts").insert({"name": "DEFAULT ACCOUNT", "plan": "free"}).execute()
+    created = get_or_none(ins) or []
+    if created:
+        _DEFAULT_ACCOUNT_ID = created[0]["id"]
+        return _DEFAULT_ACCOUNT_ID
+
+    # fallback
+    res2 = sb.table("accounts").select("id").eq("name", "DEFAULT ACCOUNT").limit(1).execute()
+    rows2 = get_or_none(res2) or []
+    if not rows2:
+        raise RuntimeError("Não achei/criei a DEFAULT ACCOUNT em accounts.")
+    _DEFAULT_ACCOUNT_ID = rows2[0]["id"]
+    return _DEFAULT_ACCOUNT_ID
+
+
+def ensure_category_id(account_id: str, name: str) -> str | None:
+    """
+    Garante que exista category por conta + nome. Se não existir, cria.
+    """
+    if not name:
+        return None
+    try:
+        r = sb.table("categories").select("id").eq("account_id", account_id).eq("name", name).limit(1).execute()
+        rows = get_or_none(r) or []
+        if rows:
+            return rows[0]["id"]
+
+        ins = sb.table("categories").insert({"account_id": account_id, "name": name}).execute()
+        created = get_or_none(ins) or []
+        if created:
+            return created[0]["id"]
+
+        r2 = sb.table("categories").select("id").eq("account_id", account_id).eq("name", name).limit(1).execute()
+        rows2 = get_or_none(r2) or []
+        return rows2[0]["id"] if rows2 else None
+    except Exception:
+        return None
+
+
+def ensure_cost_center_id(account_id: str, code: str) -> str | None:
+    """
+    Garante que exista cost_center por conta + code. Se não existir, cria.
+    """
+    if not code:
+        return None
+    try:
+        r = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", code).limit(1).execute()
+        rows = get_or_none(r) or []
+        if rows:
+            return rows[0]["id"]
+
+        ins = sb.table("cost_centers").insert({"account_id": account_id, "code": code, "name": code}).execute()
+        created = get_or_none(ins) or []
+        if created:
+            return created[0]["id"]
+
+        r2 = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", code).limit(1).execute()
+        rows2 = get_or_none(r2) or []
+        return rows2[0]["id"] if rows2 else None
+    except Exception:
+        return None
+
+# =====================================================================================
 #                              REGRAS & DICIONÁRIOS
 # =====================================================================================
 
-# Categorias ampliadas (regex -> nome)
 CATEGORY_RULES = [
-    # Mão de obra e serviços
     (r"\bma(o|ao)\s*de\s*obra|diaria|diaria(s)?|pedreir|ajudant|servente|marceneir|soldador|aplicador", "Mão de Obra"),
-    # Elétrica / Hidráulica / Drywall / Pintura
     (r"eletricist|eletric|fio|disjuntor|quadro|tomada|interruptor|spot|led|cabeamento|fiação", "Elétrico"),
     (r"hidraul|hidrauli|cano|tubo pex|regist|torneira|ralo|caixa d'?agua|esgoto|bomba|hidr[aá]ul", "Hidráulico"),
     (r"drywall|forro|gesso|placa acartonad", "Drywall/Gesso"),
     (r"pintur|tinta|massa corrida|lixa|rolo|fita crepe|spray", "Pintura"),
-    # Estrutura / Cobertura
     (r"cimento|areia|brita|argamassa|reboco|concreto|graute|bloco ceram|vergalh|arma[cç][aã]o|forma", "Estrutura/Alvenaria"),
     (r"telha|calha|ruf|cumeeira|aluminio|zinco|manta t[eé]rmica|termoac[oô]stic", "Cobertura"),
-    # Acabamento / Esquadrias
     (r"granito|porcelanato|piso|rodape|rodap[eé]|revestimento|rejunte|argamassacol", "Acabamento"),
     (r"porta|janela|vidro|esquadria|fechadur|dobradic|dobradi[cç]a|temperado|kit porta", "Esquadrias/Vidro"),
-    # Impermeabilização
     (r"impermeabiliza|manta asf[aá]ltica|vedacit|sika", "Impermeabilização"),
-    # Ferragens / Ferramentas
     (r"ferra|parafus|broca|eletrodo|disco corte|abracadeira|abra[cç]adeira|chumbador|rebite", "Ferragens/Consumíveis"),
     (r"ferramenta|esmerilhadeira|serra circular|lixadeira|parafusadeira|multimetro|trena", "Ferramentas"),
-    # Logística e equipamentos
     (r"uber|frete|entrega|logistic|carretinha|transport", "Logística"),
     (r"combust|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto", "Combustível"),
     (r"bobcat|compactador|gerador|betoneira|aluguel equip|loca[cç][aã]o equip|munck|plataforma|guindaste", "Equipamentos"),
-    # Adm/marketing/financeiro
     (r"trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio", "Marketing"),
     (r"aluguel|loca[cç][aã]o de sala|internet|energia|conta de luz|conta de agua|água|telefone|contabilidade|escritorio|escrit[oó]rio", "Custos Fixos"),
     (r"taxa|emolumento|cartorio|cartório|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof", "Taxas/Financeiro"),
-    # Alimentação
     (r"comida|refei[cç][aã]o|lanche|marmit|almo[cç]o|jantar|restaurante", "Alimentação"),
 ]
 DEFAULT_CATEGORY = "Outros"
 
-# Formas de pagamento (sinônimos)
 PAYMENT_SYNONYMS = {
     "PIX":      r"\bpix\b|\bfiz um pix\b|\bmandei um pix\b|\bchave pix\b",
     "CREDITO":  r"\bcr[eé]dito\b|\bno cart[aã]o de cr[eé]dito\b|\bpassei no cr[eé]dito\b|\bpassei no cart[aã]o\b",
@@ -100,13 +173,11 @@ PAYMENT_SYNONYMS = {
     "VALE":     r"\bvale\b|\bvale(i|u)\b|\badiantamento\b",
 }
 
-# Meses PT
 MONTHS_PT = {
     "janeiro":1, "fevereiro":2, "marco":3, "março":3, "abril":4, "maio":5, "junho":6,
     "julho":7, "agosto":8, "setembro":9, "outubro":10, "novembro":11, "dezembro":12
 }
 
-# Intent para consultas/relatórios
 QUERY_INTENT_RE = re.compile(
     r"\b(quanto\s+(eu\s+)?gastei|gastos|relat[oó]rio|me\s+mostra|mostra\s+pra\s+mim|me\s+manda)\b",
     re.I
@@ -116,7 +187,7 @@ QUERY_INTENT_RE = re.compile(
 #                               PARSE DE TEXTO
 # =====================================================================================
 
-def money_from_text(txt:str):
+def money_from_text(txt: str):
     s = _norm(txt).replace("r$", "").replace(" ", "")
     m = re.search(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s)
     if not m:
@@ -126,12 +197,6 @@ def money_from_text(txt:str):
         return round(float(raw), 2)
     except:
         return None
-
-def guess_type(txt: str):
-    t = _norm(txt)
-    if re.search(r"\b(recebi|receita|entrada|vendi|entrou|aluguel recebido)\b", t):
-        return "income"
-    return "expense"
 
 def guess_payment(txt: str):
     low = _norm(txt)
@@ -153,10 +218,6 @@ def _slugify_name(name: str) -> str:
     return s.upper()
 
 def guess_cc(txt: str) -> str | None:
-    """
-    Reconhece: 'obra do rodrigo', 'reforma da joana', 'container de castanhal', etc.
-    Retorna code padronizado: OBRA_RODRIGO / REFORMA_JOANA / CONTAINER_CASTANHAL
-    """
     t = _norm(txt)
     m = re.search(r"\b(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
     if m:
@@ -167,31 +228,7 @@ def guess_cc(txt: str) -> str | None:
             return f"{tipo.upper()}_{_slugify_name(nome)}"
     return None
 
-def _ensure_cost_center(code: str) -> int | None:
-    try:
-        res = sb.table("cost_centers").select("id").eq("code", code).execute()
-        rows = get_or_none(res) or []
-        if rows:
-            return rows[0]["id"]
-        ins = sb.table("cost_centers").insert({"code": code, "name": code}).execute()
-        created = get_or_none(ins) or []
-        if created:
-            return created[0]["id"]
-        res2 = sb.table("cost_centers").select("id").eq("code", code).execute()
-        rows2 = get_or_none(res2) or []
-        return rows2[0]["id"] if rows2 else None
-    except Exception:
-        return None
-
 def parse_date_pt(txt: str) -> str | None:
-    """
-    Datas naturais -> YYYY-MM-DD
-    hoje, ontem, anteontem, amanhã
-    'dia 12' (do mês atual)
-    12/10(/2025) ou 12-10(-2025)
-    dias da semana (pega a última ocorrência)
-    mês passado
-    """
     t = _norm(txt)
     today = date.today()
 
@@ -250,9 +287,6 @@ def _last_day_of_week(d: date):
     return _first_day_of_week(d) + timedelta(days=7)
 
 def parse_period_pt(text: str):
-    """
-    Retorna (start_date_iso, end_date_iso_exclusive, label)
-    """
     low = _norm(text)
     today = date.today()
 
@@ -345,49 +379,43 @@ def is_report_intent(text: str):
 #                               PERSISTÊNCIA
 # =====================================================================================
 
-def save_entry(tg_user_id:int, txt:str):
-    # Normaliza
+def save_entry(tg_user_id: int, txt: str):
     low = _norm(txt)
 
-    # Detecta valor
     amount = money_from_text(txt)
     if amount is None:
         return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-    # Tipo (força income se tiver palavras de entrada)
+    # força INCOME com termos de entrada
     if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s*mim)\b", low):
         etype = "income"
     else:
         etype = "expense"
 
-    # Categorias / CC / Pagamento / Data
+    # usuário -> pega account_id
+    u = sb.table("users").select("id,role,is_active,account_id").eq("tg_user_id", tg_user_id).execute()
+    ud = get_or_none(u) or []
+    if not ud or not ud[0]["is_active"]:
+        return False, "Usuário não autorizado. Use /start e peça autorização."
+
+    user_id = ud[0]["id"]
+    role = ud[0]["role"]
+    account_id = ud[0].get("account_id") or get_default_account_id()
+
     cat_name = guess_category(txt)
     cc_code  = guess_cc(txt)
     paid_via = guess_payment(txt)
     dtx = parse_date_pt(txt)
     entry_date = dtx or datetime.date.today().isoformat()
 
-    # Usuário
-    u = sb.table("users").select("*").eq("tg_user_id", tg_user_id).execute()
-    ud = get_or_none(u)
-    if not ud or not ud[0]["is_active"]:
-        return False, "Usuário não autorizado. Use /start e peça autorização."
-    user_id = ud[0]["id"]
-    role = ud[0]["role"]
-
-    # Categoria
-    c = sb.table("categories").select("id").eq("name", cat_name).execute()
-    cd = get_or_none(c)
-    cat_id = cd[0]["id"] if cd else None
-
-    # Centro de custo
-    cc_id = None
-    if cc_code:
-        cc_id = _ensure_cost_center(cc_code)
+    # garante ids por CONTA
+    cat_id = ensure_category_id(account_id, cat_name)
+    cc_id = ensure_cost_center_id(account_id, cc_code) if cc_code else None
 
     status = "approved" if role in ("owner","partner") else "pending"
 
     payload = {
+        "account_id": account_id,
         "entry_date": entry_date,
         "type": etype,
         "amount": amount,
@@ -402,6 +430,7 @@ def save_entry(tg_user_id:int, txt:str):
     try:
         sb.table("entries").insert(payload).execute()
     except Exception:
+        # se ainda não existir coluna paid_via, insere sem
         payload.pop("paid_via", None)
         sb.table("entries").insert(payload).execute()
 
@@ -415,12 +444,19 @@ def save_entry(tg_user_id:int, txt:str):
         "entry_date": entry_date
     }
 
-
 # =====================================================================================
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
 
 async def run_query_and_reply(update: Update, text: str):
+    # pega account_id do usuário que pediu relatório
+    u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
+    ud = get_or_none(u) or []
+    if not ud or not ud[0]["is_active"]:
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+    account_id = ud[0].get("account_id") or get_default_account_id()
+
     start, end, label = parse_period_pt(text)
     cat = guess_category_filter(text)
     paid = guess_paid_filter(text)
@@ -428,6 +464,7 @@ async def run_query_and_reply(update: Update, text: str):
     is_income = is_income_query(text)
 
     q = sb.table("entries").select("amount,category_id,cost_center_id,paid_via,type,entry_date")\
+        .eq("account_id", account_id)\
         .gte("entry_date", start).lt("entry_date", end)
 
     q = q.eq("type", "income" if is_income else "expense")
@@ -436,14 +473,14 @@ async def run_query_and_reply(update: Update, text: str):
         q = q.eq("paid_via", paid)
 
     if cat:
-        c = sb.table("categories").select("id").eq("name", cat).execute()
-        cd = get_or_none(c)
+        c = sb.table("categories").select("id").eq("account_id", account_id).eq("name", cat).limit(1).execute()
+        cd = get_or_none(c) or []
         if cd:
             q = q.eq("category_id", cd[0]["id"])
 
     if cc_code:
-        cc = sb.table("cost_centers").select("id").eq("code", cc_code).execute()
-        ccd = get_or_none(cc)
+        cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
+        ccd = get_or_none(cc) or []
         if ccd:
             q = q.eq("cost_center_id", ccd[0]["id"])
 
@@ -467,12 +504,23 @@ async def run_query_and_reply(update: Update, text: str):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
+
+    default_account_id = get_default_account_id()
+
     exist = sb.table("users").select("*").eq("tg_user_id", u.id).execute()
-    data = get_or_none(exist)
+    data = get_or_none(exist) or []
+
     if not data:
         sb.table("users").insert({
-            "tg_user_id": u.id, "name": u.full_name, "role": "viewer", "is_active": False
+            "tg_user_id": u.id,
+            "name": u.full_name,
+            "role": "viewer",
+            "is_active": False,
+            "account_id": default_account_id
         }).execute()
+    else:
+        if not data[0].get("account_id"):
+            sb.table("users").update({"account_id": default_account_id}).eq("tg_user_id", u.id).execute()
 
     await update.message.reply_text(
         f"Fala, {u.first_name}! Eu sou o Boris.\n"
@@ -482,8 +530,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    q = sb.table("users").select("role,is_active").eq("tg_user_id", u.id).execute()
-    you = get_or_none(q)
+
+    q = sb.table("users").select("id,role,is_active,account_id").eq("tg_user_id", u.id).execute()
+    you = get_or_none(q) or []
     if not you or you[0]["role"] != "owner" or not you[0]["is_active"]:
         await update.message.reply_text("Somente o owner pode autorizar usuários.")
         return
@@ -491,13 +540,23 @@ async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) == 0:
         await update.message.reply_text("Uso: /autorizar <tg_user_id> role=owner|partner|buyer|viewer")
         return
+
     target = int(context.args[0])
     role = "buyer"
     for a in context.args[1:]:
         if a.startswith("role="):
-            role = a.split("=",1)[1]
+            role = a.split("=", 1)[1].strip()
 
-    sb.table("users").upsert({"tg_user_id": target, "role": role, "is_active": True, "name": ""}).execute()
+    owner_account_id = you[0].get("account_id") or get_default_account_id()
+
+    sb.table("users").upsert({
+        "tg_user_id": target,
+        "role": role,
+        "is_active": True,
+        "name": "",
+        "account_id": owner_account_id
+    }).execute()
+
     await update.message.reply_text(f"Usuário {target} autorizado como {role} ✅")
 
 async def cmd_despesa(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -517,7 +576,7 @@ async def cmd_despesa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args) if context.args else (update.message.text or "")
-    ok, res = save_entry(update.effective_user.id, "receita "+txt)
+    ok, res = save_entry(update.effective_user.id, "receita " + txt)
     if ok:
         r = res
         extras = []
@@ -531,17 +590,32 @@ async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ {res}")
 
 async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Resumo do mês por categoria e CC, filtrando por CONTA.
+    """
+    u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
+    ud = get_or_none(u) or []
+    if not ud or not ud[0]["is_active"]:
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+    account_id = ud[0].get("account_id") or get_default_account_id()
+
     today = datetime.date.today()
     month_start = today.replace(day=1).isoformat()
     month_end = (today.replace(day=28) + timedelta(days=4)).replace(day=1).isoformat()
 
     resp = sb.table("entries").select(
         "amount,category_id,cost_center_id,type,entry_date,status"
-    ).gte("entry_date", month_start).lt("entry_date", month_end).eq("type", "expense").execute()
+    ).eq("account_id", account_id)\
+     .gte("entry_date", month_start).lt("entry_date", month_end)\
+     .eq("type", "expense").execute()
+
     rows = get_or_none(resp) or []
 
-    cats = {r["id"]: r["name"] for r in (get_or_none(sb.table("categories").select("id,name").execute()) or [])}
-    ccs  = {r["id"]: r["code"] for r in (get_or_none(sb.table("cost_centers").select("id,code").execute()) or [])}
+    cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
+    ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
+    cats = {r["id"]: r["name"] for r in cats_rows}
+    ccs  = {r["id"]: r["code"] for r in ccs_rows}
 
     by_cat = defaultdict(float)
     by_cc  = defaultdict(float)
@@ -573,7 +647,6 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await run_query_and_reply(update, user_text)
         return
 
-    # Lançamento normal
     ok, res = save_entry(update.effective_user.id, user_text)
     if ok:
         r = res
@@ -590,9 +663,9 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(
             "Me manda algo tipo: 'paguei 200 no eletricista da obra do Rodrigo (pix)'\n"
+            "ou: 'recebi 1200 da Joana (pix)'\n"
             "ou usa /despesa 1200 tinta reforma Joana"
         )
-
 
 # -------------------- ÁUDIO (voice/audio) — robusto com /tmp --------------------
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -605,7 +678,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message.voice:
         tgfile = await update.message.voice.get_file()
-        ext = ".oga"  # Telegram voice é OGG/Opus
+        ext = ".oga"
     elif update.message.audio:
         tgfile = await update.message.audio.get_file()
         mime = (update.message.audio.mime_type or "").lower()
@@ -626,7 +699,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         text_out = None
-        # Tenta o modelo rápido primeiro
         try:
             with open(local_path, "rb") as fh:
                 resp = oa_client.audio.transcriptions.create(
@@ -634,18 +706,15 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     file=fh,
                     language="pt"
                 )
-            text_out = getattr(resp, "text", "") or ""
-            text_out = text_out.strip()
+            text_out = (getattr(resp, "text", "") or "").strip()
         except Exception:
-            # Fallback para whisper-1 (estável)
             with open(local_path, "rb") as fh:
                 resp = oa_client.audio.transcriptions.create(
                     model="whisper-1",
                     file=fh,
                     language="pt"
                 )
-            text_out = getattr(resp, "text", "") or ""
-            text_out = text_out.strip()
+            text_out = (getattr(resp, "text", "") or "").strip()
     except Exception as e:
         await update.message.reply_text(f"Não consegui transcrever o áudio. Erro: {e}")
         try:
@@ -663,13 +732,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Não consegui entender o áudio.")
         return
 
-    # Consulta?
     if is_report_intent(text_out):
         await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
         await run_query_and_reply(update, text_out)
         return
 
-   # Lançamento padrão
     ok, res = save_entry(update.effective_user.id, text_out)
     if ok:
         r = res
@@ -689,25 +756,22 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🗣️ Transcrito: “{text_out}”\n"
             f"⚠️ {res}"
         )
-    
+
 # =====================================================================================
 #                               TELEGRAM APP
 # =====================================================================================
 
 tg_app: Application = ApplicationBuilder().token(TOKEN).build()
 
-# Comandos
 tg_app.add_handler(CommandHandler("start", cmd_start))
 tg_app.add_handler(CommandHandler("autorizar", cmd_autorizar))
 tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
 tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
 
-# Mensagens
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
-# Inicialização/encerramento obrigatórios p/ webhook (ptb v20)
 @app.on_event("startup")
 async def on_startup():
     await tg_app.initialize()
