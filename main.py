@@ -1,11 +1,9 @@
 import os
 import re
-import io
 import uuid
 import unicodedata
-import asyncio
 import datetime
-from datetime import date, timedelta, datetime as dt
+from datetime import date, timedelta
 from collections import defaultdict
 
 from fastapi import FastAPI, Request
@@ -21,7 +19,6 @@ from telegram.ext import (
 from supabase import create_client, Client
 
 # -------------- OpenAI (Whisper via API) ---------------
-# openai>=1.0.0
 from openai import OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 oa_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -44,7 +41,7 @@ app = FastAPI()
 # =====================================================================================
 
 def _norm(s: str) -> str:
-    s = s.lower()
+    s = (s or "").lower()
     s = unicodedata.normalize("NFD", s)
     return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
 
@@ -62,7 +59,7 @@ _DEFAULT_ACCOUNT_ID = None
 
 def get_default_account_id() -> str:
     """
-    Busca (ou cria) uma conta padrão. Evita criar conta “solta”.
+    Busca (ou cria) uma conta padrão.
     Depende de tabela accounts(name, plan, id).
     """
     global _DEFAULT_ACCOUNT_ID
@@ -90,9 +87,6 @@ def get_default_account_id() -> str:
 
 
 def ensure_category_id(account_id: str, name: str) -> str | None:
-    """
-    Garante que exista category por conta + nome. Se não existir, cria.
-    """
     if not name:
         return None
     try:
@@ -114,9 +108,6 @@ def ensure_category_id(account_id: str, name: str) -> str | None:
 
 
 def ensure_cost_center_id(account_id: str, code: str) -> str | None:
-    """
-    Garante que exista cost_center por conta + code. Se não existir, cria.
-    """
     if not code:
         return None
     try:
@@ -142,7 +133,7 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
 
 CATEGORY_RULES = [
     (r"\bma(o|ao)\s*de\s*obra|diaria|diaria(s)?|pedreir|ajudant|servente|marceneir|soldador|aplicador", "Mão de Obra"),
-    (r"eletricist|eletric|fio|disjuntor|quadro|tomada|interruptor|spot|led|cabeamento|fiação", "Elétrico"),
+    (r"eletricist|eletric|fio|disjuntor|quadro|tomada|interruptor|spot|led|cabeamento|fiac[aã]o|fiação", "Elétrico"),
     (r"hidraul|hidrauli|cano|tubo pex|regist|torneira|ralo|caixa d'?agua|esgoto|bomba|hidr[aá]ul", "Hidráulico"),
     (r"drywall|forro|gesso|placa acartonad", "Drywall/Gesso"),
     (r"pintur|tinta|massa corrida|lixa|rolo|fita crepe|spray", "Pintura"),
@@ -177,21 +168,14 @@ MONTHS_PT = {
 }
 
 QUERY_INTENT_RE = re.compile(
-    r"\b(quanto\s+(eu\s+)?gastei|gastos|relat[oó]rio|me\s+mostra|mostra\s+pra\s+mim|me\s+manda)\b",
+    r"\b(quanto\s+(eu\s+)?gastei|gastos|relat[oó]rio|me\s+mostra|mostra\s+pra\s+mim|me\s+manda|quanto\s+entrou)\b",
     re.I
 )
 
-# ✅ SALDO (NOVO)
 BALANCE_INTENT_RE = re.compile(
-    r"\b(saldo|saldo\s+atual|qual\s+e\s+o\s+saldo|quanto\s+tenho|quanto\s+eu\s+tenho|quanto\s+sobrou)\b",
+    r"\b(saldo\s+atual|qual\s+e\s+o\s+saldo|meu\s+saldo)\b",
     re.I
 )
-
-def is_balance_intent(text: str) -> bool:
-    return bool(BALANCE_INTENT_RE.search(_norm(text)))
-
-def has_money_value(text: str) -> bool:
-    return money_from_text(text) is not None
 
 # =====================================================================================
 #                               PARSE DE TEXTO
@@ -246,24 +230,6 @@ def parse_date_pt(txt: str) -> str | None:
     if "ontem" in t: return (today - timedelta(days=1)).isoformat()
     if "anteontem" in t: return (today - timedelta(days=2)).isoformat()
     if "amanha" in t: return (today + timedelta(days=1)).isoformat()
-    if "semana passada" in t:
-        wd = today.weekday()
-        last_monday = today - timedelta(days=wd+7)
-        return last_monday.isoformat()
-    if "mes passado" in t or "mês passado" in txt:
-        first = today.replace(day=1)
-        last_month = (first - timedelta(days=1)).replace(day=1)
-        return last_month.isoformat()
-
-    week_map = {
-        "segunda": 0, "terca": 1, "terça": 1, "quarta": 2,
-        "quinta": 3, "sexta": 4, "sabado": 5, "sábado": 5, "domingo": 6
-    }
-    for k, wd_target in week_map.items():
-        if k in t:
-            wd_today = today.weekday()
-            delta = (wd_today - wd_target) % 7
-            return (today - timedelta(days=delta)).isoformat()
 
     m = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b", t)
     if m:
@@ -328,35 +294,17 @@ def parse_period_pt(text: str):
         s_passado = (s_atual - timedelta(days=1)).replace(day=1)
         return s_passado.isoformat(), e_passado.isoformat(), "mês passado"
 
-    if re.search(r"\besse ano\b", low):
-        s = date(today.year, 1, 1)
-        e = date(today.year + 1, 1, 1)
-        return s.isoformat(), e.isoformat(), "este ano"
-
-    if re.search(r"\bano passado\b", low):
-        s = date(today.year - 1, 1, 1)
-        e = date(today.year, 1, 1)
-        return s.isoformat(), e.isoformat(), "ano passado"
-
     m = re.search(r"\bem\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?", low)
     if not m:
         m = re.search(r"\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))\b", low)
     if m:
-        mes = m.group(1).replace("ç","c")
+        mes = m.group(1).replace("ç", "c")
         ano = int(m.group(2)) if m.group(2) else today.year
         month_num = MONTHS_PT.get(mes, None)
         if month_num:
             s = date(ano, month_num, 1)
             e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
             return s.isoformat(), e.isoformat(), f"{m.group(1).title()} {ano}"
-
-    m = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{4}))?\s*(?:a|até)\s*(\d{1,2})/(\d{1,2})(?:/(\d{4}))?", low)
-    if m:
-        d1, m1, y1 = int(m.group(1)), int(m.group(2)), int(m.group(3)) if m.group(3) else today.year
-        d2, m2, y2 = int(m.group(4)), int(m.group(5)), int(m.group(6)) if m.group(6) else y1
-        s = date(y1, m1, d1)
-        e = date(y2, m2, d2) + timedelta(days=1)
-        return s.isoformat(), e.isoformat(), f"{d1:02d}/{m1:02d}/{y1} a {d2:02d}/{m2:02d}/{y2}"
 
     s = today.replace(day=1)
     e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -379,11 +327,19 @@ def guess_paid_filter(text: str):
 def guess_cc_filter(text: str):
     return guess_cc(text)
 
+# ✅ CORREÇÃO AQUI (mais robusto)
 def is_income_query(text: str):
-    return bool(re.search(r"\b(entrou|recebi|receitas?|quanto\s+entrou)\b", text, re.I))
+    return bool(re.search(
+        r"\b(entrou|recebi|receita|receitas|ganhei|faturamento|quanto\s+entrou)\b",
+        text,
+        re.I
+    ))
 
 def is_report_intent(text: str):
     return bool(QUERY_INTENT_RE.search(text))
+
+def is_balance_intent(text: str):
+    return bool(BALANCE_INTENT_RE.search(_norm(text)))
 
 # =====================================================================================
 #                               PERSISTÊNCIA
@@ -396,11 +352,13 @@ def save_entry(tg_user_id: int, txt: str):
     if amount is None:
         return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
+    # força INCOME com termos de entrada
     if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s*mim)\b", low):
         etype = "income"
     else:
         etype = "expense"
 
+    # usuário -> pega account_id
     u = sb.table("users").select("id,role,is_active,account_id").eq("tg_user_id", tg_user_id).execute()
     ud = get_or_none(u) or []
     if not ud or not ud[0]["is_active"]:
@@ -416,10 +374,11 @@ def save_entry(tg_user_id: int, txt: str):
     dtx = parse_date_pt(txt)
     entry_date = dtx or datetime.date.today().isoformat()
 
+    # garante ids por CONTA
     cat_id = ensure_category_id(account_id, cat_name)
     cc_id = ensure_cost_center_id(account_id, cc_code) if cc_code else None
 
-    status = "approved" if role in ("owner","partner") else "pending"
+    status = "approved" if role in ("owner", "partner") else "pending"
 
     payload = {
         "account_id": account_id,
@@ -454,33 +413,6 @@ def save_entry(tg_user_id: int, txt: str):
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
 
-async def run_balance_and_reply(update: Update):
-    """
-    Saldo da CONTA: receitas - despesas (todas as entries).
-    """
-    u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
-    ud = get_or_none(u) or []
-    if not ud or not ud[0]["is_active"]:
-        await update.message.reply_text("Usuário não autorizado.")
-        return
-    account_id = ud[0].get("account_id") or get_default_account_id()
-
-    resp = sb.table("entries").select("amount,type").eq("account_id", account_id).execute()
-    rows = get_or_none(resp) or []
-
-    total_income = sum(float(r["amount"]) for r in rows if r.get("type") == "income")
-    total_expense = sum(float(r["amount"]) for r in rows if r.get("type") == "expense")
-    saldo = total_income - total_expense
-
-    await update.message.reply_text(
-        f"💰 Saldo atual:\n"
-        f"Receitas: {moeda_fmt(total_income)}\n"
-        f"Despesas: {moeda_fmt(total_expense)}\n"
-        f"———————————\n"
-        f"Saldo: {moeda_fmt(saldo)}",
-        parse_mode="Markdown"
-    )
-
 async def run_query_and_reply(update: Update, text: str):
     u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
     ud = get_or_none(u) or []
@@ -493,13 +425,13 @@ async def run_query_and_reply(update: Update, text: str):
     cat = guess_category_filter(text)
     paid = guess_paid_filter(text)
     cc_code = guess_cc_filter(text)
-    is_income = is_income_query(text)
+    income_intent = is_income_query(text)
 
-    q = sb.table("entries").select("amount,category_id,cost_center_id,paid_via,type,entry_date")\
-        .eq("account_id", account_id)\
+    q = sb.table("entries").select("amount,category_id,cost_center_id,paid_via,type,entry_date") \
+        .eq("account_id", account_id) \
         .gte("entry_date", start).lt("entry_date", end)
 
-    q = q.eq("type", "income" if is_income else "expense")
+    q = q.eq("type", "income" if income_intent else "expense")
 
     if paid:
         q = q.eq("paid_via", paid)
@@ -526,8 +458,37 @@ async def run_query_and_reply(update: Update, text: str):
     filtros_txt = f" | Filtros: {', '.join(filtros)}" if filtros else ""
 
     await update.message.reply_text(
-        f"📊 Total de {'receitas' if is_income else 'gastos'} em {label}{filtros_txt}:\n*{moeda_fmt(total)}*",
+        f"📊 Total de {'receitas' if income_intent else 'gastos'} em {label}{filtros_txt}:\n*{moeda_fmt(total)}*",
         parse_mode="Markdown"
+    )
+
+async def run_balance_and_reply(update: Update):
+    u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
+    ud = get_or_none(u) or []
+    if not ud or not ud[0]["is_active"]:
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+    account_id = ud[0].get("account_id") or get_default_account_id()
+
+    # por padrão: mês atual
+    today = date.today()
+    start = today.replace(day=1).isoformat()
+    end = (today.replace(day=28) + timedelta(days=4)).replace(day=1).isoformat()
+
+    base = sb.table("entries").select("amount,type").eq("account_id", account_id) \
+        .gte("entry_date", start).lt("entry_date", end)
+
+    rows = get_or_none(base.execute()) or []
+    receitas = sum(float(r["amount"]) for r in rows if r["type"] == "income")
+    despesas = sum(float(r["amount"]) for r in rows if r["type"] == "expense")
+    saldo = receitas - despesas
+
+    await update.message.reply_text(
+        "💰 Saldo atual (mês):\n"
+        f"Receitas: {moeda_fmt(receitas)}\n"
+        f"Despesas: {moeda_fmt(despesas)}\n"
+        "____________________\n"
+        f"Saldo: {moeda_fmt(saldo)}"
     )
 
 # =====================================================================================
@@ -536,7 +497,6 @@ async def run_query_and_reply(update: Update, text: str):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-
     default_account_id = get_default_account_id()
 
     exist = sb.table("users").select("*").eq("tg_user_id", u.id).execute()
@@ -622,9 +582,6 @@ async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ {res}")
 
 async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Resumo do mês por categoria e CC, filtrando por CONTA.
-    """
     u = sb.table("users").select("account_id,is_active").eq("tg_user_id", update.effective_user.id).execute()
     ud = get_or_none(u) or []
     if not ud or not ud[0]["is_active"]:
@@ -638,8 +595,8 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     resp = sb.table("entries").select(
         "amount,category_id,cost_center_id,type,entry_date,status"
-    ).eq("account_id", account_id)\
-     .gte("entry_date", month_start).lt("entry_date", month_end)\
+    ).eq("account_id", account_id) \
+     .gte("entry_date", month_start).lt("entry_date", month_end) \
      .eq("type", "expense").execute()
 
     rows = get_or_none(resp) or []
@@ -674,29 +631,17 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = (update.message.text or "").strip()
 
-    # 1) SALDO
+    # Saldo
     if is_balance_intent(user_text):
         await run_balance_and_reply(update)
         return
 
-    # 2) CONSULTA/RELATÓRIO
+    # Consulta/relatório
     if is_report_intent(user_text):
         await run_query_and_reply(update, user_text)
         return
 
-    # 3) SE NÃO TEM VALOR, NÃO É LANÇAMENTO
-    if not has_money_value(user_text):
-        await update.message.reply_text(
-            "Não entendi como lançamento.\n"
-            "Exemplos:\n"
-            "• paguei 200 no eletricista da obra do Rodrigo (pix)\n"
-            "• recebi 1200 da Joana (pix)\n"
-            "• quanto eu gastei esse mês\n"
-            "• qual é o saldo atual"
-        )
-        return
-
-    # 4) LANÇAMENTO
+    # Lançamento normal
     ok, res = save_entry(update.effective_user.id, user_text)
     if ok:
         r = res
@@ -711,7 +656,12 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}"
         )
     else:
-        await update.message.reply_text(f"⚠️ {res}")
+        await update.message.reply_text(
+            "Me manda algo tipo:\n"
+            "• 'paguei 200 no eletricista da obra do Rodrigo (pix)'\n"
+            "• 'recebi 1200 da Joana (pix)'\n"
+            "Ou usa /despesa ... /receita ..."
+        )
 
 # -------------------- ÁUDIO (voice/audio) — robusto com /tmp --------------------
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -744,7 +694,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await tgfile.download_to_drive(local_path)
 
     try:
-        text_out = None
         try:
             with open(local_path, "rb") as fh:
                 resp = oa_client.audio.transcriptions.create(
@@ -778,27 +727,20 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Não consegui entender o áudio.")
         return
 
-    # 1) SALDO (NOVO)
+    # Sempre mostra transcrição
+    await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
+
+    # Saldo
     if is_balance_intent(text_out):
-        await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
         await run_balance_and_reply(update)
         return
 
-    # 2) CONSULTA
+    # Consulta/relatório
     if is_report_intent(text_out):
-        await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
         await run_query_and_reply(update, text_out)
         return
 
-    # 3) SE NÃO TEM VALOR, NÃO É LANÇAMENTO
-    if not has_money_value(text_out):
-        await update.message.reply_text(
-            f"🗣️ Transcrito: “{text_out}”\n"
-            "Não identifiquei um lançamento."
-        )
-        return
-
-    # 4) LANÇAMENTO
+    # Lançamento
     ok, res = save_entry(update.effective_user.id, text_out)
     if ok:
         r = res
@@ -810,14 +752,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             extras.append(f"💳 {r['paid_via']}")
         tail = ("\n" + " • ".join(extras)) if extras else ""
         await update.message.reply_text(
-            f"🗣️ Transcrito: “{text_out}”\n"
             f"✅ {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'} • {r['status']}{tail}"
         )
     else:
-        await update.message.reply_text(
-            f"🗣️ Transcrito: “{text_out}”\n"
-            f"⚠️ {res}"
-        )
+        await update.message.reply_text(f"⚠️ {res}")
 
 # =====================================================================================
 #                               TELEGRAM APP
