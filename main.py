@@ -531,33 +531,35 @@ def _set_last_cc(tg_user_id: int, cc_code: str):
         pass
 
 # --- NOVO: persistência do "último lançamento" no banco (não depende de RAM) ---
-def _get_last_entry_id_from_db(tg_user_id: int) -> str | None:
+def _get_last_entry_id_from_db(tg_user_id: int) -> int | None:
     """
-    Lê users.last_entry_id (se existir).
+    Lê users.last_entry_id (BIGINT).
     Se a coluna não existir ainda, falha silenciosamente e volta None.
     """
     try:
         r = sb.table("users").select("last_entry_id").eq("tg_user_id", tg_user_id).limit(1).execute()
         rows = get_or_none(r) or []
-        if rows and rows[0].get("last_entry_id"):
-            return rows[0]["last_entry_id"]
+        if rows and rows[0].get("last_entry_id") is not None:
+            try:
+                return int(rows[0]["last_entry_id"])
+            except Exception:
+                return None
     except Exception:
         return None
     return None
 
-def _set_last_entry_id_to_db(tg_user_id: int, entry_id: str | None):
+def _set_last_entry_id_to_db(tg_user_id: int, entry_id: int | None):
     """
     Atualiza users.last_entry_id + users.last_entry_at (se as colunas existirem).
-    Se as colunas não existirem ainda, falha silenciosamente.
+    Se entry_id for None, também zera last_entry_at (pra ficar limpo).
     """
     try:
         payload = {
             "last_entry_id": entry_id,
-            "last_entry_at": datetime.datetime.utcnow().isoformat()
+            "last_entry_at": (datetime.datetime.utcnow().isoformat() if entry_id is not None else None)
         }
         sb.table("users").update(payload).eq("tg_user_id", tg_user_id).execute()
     except Exception:
-        # Se ainda não criou as colunas no Supabase, não quebra o bot.
         pass
 
 # =====================================================================================
@@ -631,9 +633,11 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
             _set_last_cc(tg_user_id, cc_code)
 
         # cache em RAM (continua existindo)
-        if created_row and isinstance(created_row, dict) and created_row.get("id"):
+        if created_row and isinstance(created_row, dict) and created_row.get("id") is not None:
+            entry_id = int(created_row["id"])
+
             LAST_ENTRY_BY_TG_USER[tg_user_id] = {
-                "id": created_row["id"],
+                "id": entry_id,
                 "account_id": account_id,
                 "created_by": user_id,
                 "amount": amount,
@@ -642,6 +646,10 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
                 "cc": cc_code,
                 "category": cat_name,
             }
+
+            # --- NOVO: persistir último lançamento no banco (à prova de restart/2 instâncias) ---
+            _set_last_entry_id_to_db(tg_user_id, entry_id)
+
         else:
             LAST_ENTRY_BY_TG_USER[tg_user_id] = {
                 "id": None,
@@ -653,10 +661,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
                 "cc": cc_code,
                 "category": cat_name,
             }
-
-        # --- NOVO: persistir último lançamento no banco (à prova de restart/2 instâncias) ---
-        if created_row and isinstance(created_row, dict) and created_row.get("id"):
-            _set_last_entry_id_to_db(tg_user_id, created_row["id"])
 
         return True, {
             "amount": amount,
@@ -750,7 +754,7 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = user_row["id"]
 
         entry_id = None
-        meta = LAST_ENTRY_BY_TG_USER.get(tg_uid) or {}
+        meta = {}
 
         # 2) NOVO: tenta usar users.last_entry_id (à prova de restart/instância)
         db_last_entry_id = _get_last_entry_id_from_db(tg_uid)
@@ -763,15 +767,17 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if rows:
                     row = rows[0]
                     if row.get("account_id") == account_id and row.get("created_by") == user_id:
-                        entry_id = row["id"]
-                        meta = {**meta, **row}
+                        entry_id = int(row["id"])
+                        meta = row
             except Exception:
                 pass
 
         # 3) fallback: cache em RAM (se existir)
         if not entry_id:
-            if meta and meta.get("id") and meta.get("account_id") == account_id and meta.get("created_by") == user_id:
-                entry_id = meta["id"]
+            mem = LAST_ENTRY_BY_TG_USER.get(tg_uid) or {}
+            if mem.get("id") is not None and mem.get("account_id") == account_id and mem.get("created_by") == user_id:
+                entry_id = int(mem["id"])
+                meta = mem
 
         # 4) fallback final: busca no banco pelo último created_by
         if not entry_id:
@@ -783,8 +789,8 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     .limit(1).execute()
                 rows = get_or_none(r) or []
                 if rows:
-                    entry_id = rows[0]["id"]
-                    meta = {**meta, **rows[0]}
+                    entry_id = int(rows[0]["id"])
+                    meta = rows[0]
             except Exception:
                 r = sb.table("entries").select("id,amount,type,entry_date") \
                     .eq("account_id", account_id) \
@@ -794,8 +800,8 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     .limit(1).execute()
                 rows = get_or_none(r) or []
                 if rows:
-                    entry_id = rows[0]["id"]
-                    meta = {**meta, **rows[0]}
+                    entry_id = int(rows[0]["id"])
+                    meta = rows[0]
 
         if not entry_id:
             await update.message.reply_text("↩️ Não encontrei nenhum lançamento recente pra desfazer.")
@@ -1135,7 +1141,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upd["account_id"] = default_account_id
         if "last_cc" not in data[0]:
             upd["last_cc"] = None
-        # não força last_entry_id aqui (pode não existir a coluna)
         if upd:
             try:
                 sb.table("users").update(upd).eq("tg_user_id", u.id).execute()
