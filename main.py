@@ -424,10 +424,14 @@ def is_saldo_intent(text: str):
     return bool(SALDO_INTENT_RE.search(text or ""))
 
 # =====================================================================================
-#                               CC STATE (last_cc) + pending
+#                               CC STATE (last_cc) + pending + undo cache
 # =====================================================================================
 
 PENDING_BY_USER: dict[int, dict] = {}
+
+# Cache do último lançamento por usuário (melhor caminho p/ /desfazer)
+# Obs: em restart do Render isso zera — por isso tem fallback no banco.
+LAST_ENTRY_BY_TG_USER: dict[int, dict] = {}
 
 def _get_user_row(tg_user_id: int) -> dict | None:
     r = sb.table("users").select("id,role,is_active,account_id,last_cc").eq("tg_user_id", tg_user_id).limit(1).execute()
@@ -506,16 +510,47 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
             "created_by": user_id,
         }
 
+        created_row = None
+
         # tenta inserir com paid_via
         try:
-            sb.table("entries").insert(payload).execute()
+            ins_res = sb.table("entries").insert(payload).execute()
+            created = get_or_none(ins_res) or []
+            created_row = created[0] if created else None
         except Exception:
             # fallback se coluna paid_via não existir
             payload.pop("paid_via", None)
-            sb.table("entries").insert(payload).execute()
+            ins_res = sb.table("entries").insert(payload).execute()
+            created = get_or_none(ins_res) or []
+            created_row = created[0] if created else None
 
         if cc_code:
             _set_last_cc(tg_user_id, cc_code)
+
+        # guarda cache do último lançamento (pra /desfazer)
+        if created_row and isinstance(created_row, dict) and created_row.get("id"):
+            LAST_ENTRY_BY_TG_USER[tg_user_id] = {
+                "id": created_row["id"],
+                "account_id": account_id,
+                "created_by": user_id,
+                "amount": amount,
+                "type": etype,
+                "entry_date": entry_date,
+                "cc": cc_code,
+                "category": cat_name,
+            }
+        else:
+            # mesmo sem id retornado, guarda um cache mínimo (sem id)
+            LAST_ENTRY_BY_TG_USER[tg_user_id] = {
+                "id": None,
+                "account_id": account_id,
+                "created_by": user_id,
+                "amount": amount,
+                "type": etype,
+                "entry_date": entry_date,
+                "cc": cc_code,
+                "category": cat_name,
+            }
 
         return True, {
             "amount": amount,
@@ -534,7 +569,7 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
 
-# =================== NOVO: /resumo (semanal) ===================
+# =================== /resumo (semanal) ===================
 async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_row = _get_user_row(update.effective_user.id)
@@ -590,6 +625,98 @@ async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /resumo: {type(e).__name__}: {e}")
+
+# =================== /desfazer (último lançamento do usuário) ===================
+async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        tg_uid = update.effective_user.id
+
+        # 1) Se estava pendente de CC, desfaz a pendência (não chegou a lançar)
+        if tg_uid in PENDING_BY_USER:
+            PENDING_BY_USER.pop(tg_uid, None)
+            await update.message.reply_text("↩️ Beleza. Pendência cancelada (não lancei nada).")
+            return
+
+        user_row = _get_user_row(tg_uid)
+        if not user_row or not user_row.get("is_active"):
+            await update.message.reply_text("Usuário não autorizado.")
+            return
+
+        account_id = user_row.get("account_id") or get_default_account_id()
+        user_id = user_row["id"]
+
+        entry_id = None
+        meta = LAST_ENTRY_BY_TG_USER.get(tg_uid) or {}
+
+        # 2) Tenta usar o cache (mais confiável)
+        if meta and meta.get("id") and meta.get("account_id") == account_id and meta.get("created_by") == user_id:
+            entry_id = meta["id"]
+
+        # 3) Fallback: busca no banco o último lançamento do usuário
+        if not entry_id:
+            try:
+                # tenta por created_at (mais correto)
+                r = sb.table("entries").select("id,amount,type,entry_date") \
+                    .eq("account_id", account_id) \
+                    .eq("created_by", user_id) \
+                    .order("created_at", desc=True) \
+                    .limit(1).execute()
+                rows = get_or_none(r) or []
+                if rows:
+                    entry_id = rows[0]["id"]
+                    meta = {**meta, **rows[0]}
+            except Exception:
+                # fallback se não existir created_at: tenta por entry_date + id
+                r = sb.table("entries").select("id,amount,type,entry_date") \
+                    .eq("account_id", account_id) \
+                    .eq("created_by", user_id) \
+                    .order("entry_date", desc=True) \
+                    .order("id", desc=True) \
+                    .limit(1).execute()
+                rows = get_or_none(r) or []
+                if rows:
+                    entry_id = rows[0]["id"]
+                    meta = {**meta, **rows[0]}
+
+        if not entry_id:
+            await update.message.reply_text("↩️ Não encontrei nenhum lançamento recente pra desfazer.")
+            return
+
+        # 4) Apaga
+        sb.table("entries").delete().eq("id", entry_id).execute()
+
+        # 5) limpa cache
+        LAST_ENTRY_BY_TG_USER.pop(tg_uid, None)
+
+        # resposta amigável
+        amt = meta.get("amount")
+        typ = meta.get("type")
+        dt  = meta.get("entry_date")
+
+        msg = "↩️ Desfeito: "
+        if typ == "income":
+            msg += "última receita"
+        elif typ == "expense":
+            msg += "última despesa"
+        else:
+            msg += "último lançamento"
+
+        extras = []
+        if amt is not None:
+            try:
+                extras.append(moeda_fmt(float(amt)))
+            except Exception:
+                pass
+        if dt:
+            extras.append(f"🗓️ {dt}")
+
+        if extras:
+            msg += "\n" + " • ".join(extras)
+
+        await update.message.reply_text(msg)
+
+    except Exception as e:
+        await update.message.reply_text(f"💥 Erro no /desfazer: {type(e).__name__}: {e}")
 
 async def run_query_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -763,6 +890,8 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "Exemplos:\n"
                 "• paguei 200 no eletricista (pix) bloco A\n"
                 "• recebi 1200 do cliente pix sede\n"
+                "• /desfazer (desfaz o último lançamento)\n"
+                "• /resumo (resumo semanal)\n"
                 "• quanto entrou nesse mês?\n"
                 "• saldo dessa semana\n"
                 "• saldo nos últimos 15 dias"
@@ -999,7 +1128,8 @@ tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
 tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("saldo", cmd_saldo))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
-tg_app.add_handler(CommandHandler("resumo", cmd_resumo))  # NOVO ✅
+tg_app.add_handler(CommandHandler("resumo", cmd_resumo))     # ✅
+tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer)) # ✅ NOVO
 
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
