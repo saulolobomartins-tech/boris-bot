@@ -237,6 +237,19 @@ QUERY_INTENT_RE = re.compile(
 )
 SALDO_INTENT_RE = re.compile(r"\b(saldo(\s+atual)?|balanc(o|co)|balanco)\b", re.I)
 
+# ------------------ NOVO: intenção de correção ------------------
+CORRECTION_INTENT_RE = re.compile(
+    r"\b("
+    r"corrig(e|ir|e ai)|ajust(a|ar)|retific(a|ar)|"
+    r"nao\s+era|não\s+era|era\s+(na|no)|foi\s+(na|no)|"
+    r"na\s+verdade|errei|troca\s+pra|muda\s+pra"
+    r")\b",
+    re.I
+)
+
+def is_correction_intent(text: str) -> bool:
+    return bool(CORRECTION_INTENT_RE.search(text or ""))
+
 # =====================================================================================
 #                               PARSE DE TEXTO
 # =====================================================================================
@@ -290,6 +303,18 @@ def guess_category(txt: str):
         if re.search(pat, low):
             return cat
     return DEFAULT_CATEGORY
+
+# ------------------ NOVO: só muda categoria se bater regra ------------------
+def guess_category_explicit(txt: str):
+    """
+    Retorna (cat, matched_bool)
+    matched_bool = True só se alguma regra bater (não conta fallback 'Outros')
+    """
+    low = _norm(txt)
+    for pat, cat in CATEGORY_RULES:
+        if re.search(pat, low):
+            return cat, True
+    return DEFAULT_CATEGORY, False
 
 def _slugify_name(name: str) -> str:
     s = _norm(name)
@@ -641,6 +666,99 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
     except Exception as e:
         return False, f"Erro interno no save_entry: {type(e).__name__}: {e}"
 
+# ------------------ NOVO: buscar último lançamento no banco ------------------
+def _get_last_entry_id_db(account_id: str, user_id: str) -> str | None:
+    try:
+        r = sb.table("entries").select("id") \
+            .eq("account_id", account_id) \
+            .eq("created_by", user_id) \
+            .order("created_at", desc=True) \
+            .limit(1).execute()
+        rows = get_or_none(r) or []
+        return rows[0]["id"] if rows else None
+    except Exception:
+        r = sb.table("entries").select("id") \
+            .eq("account_id", account_id) \
+            .eq("created_by", user_id) \
+            .order("entry_date", desc=True) \
+            .order("id", desc=True) \
+            .limit(1).execute()
+        rows = get_or_none(r) or []
+        return rows[0]["id"] if rows else None
+
+# ------------------ NOVO: aplicar correção no último lançamento ------------------
+def apply_correction_to_last_entry(tg_user_id: int, text: str):
+    user_row = _get_user_row(tg_user_id)
+    if not user_row or not user_row.get("is_active"):
+        return False, "Usuário não autorizado."
+
+    user_id = user_row["id"]
+    account_id = user_row.get("account_id") or get_default_account_id()
+
+    # cache -> fallback banco
+    entry_id = None
+    meta = LAST_ENTRY_BY_TG_USER.get(tg_user_id) or {}
+    if meta.get("account_id") == account_id and meta.get("created_by") == user_id and meta.get("id"):
+        entry_id = meta["id"]
+    if not entry_id:
+        entry_id = _get_last_entry_id_db(account_id, user_id)
+
+    if not entry_id:
+        return False, "Não achei nenhum lançamento recente pra corrigir."
+
+    cc_code = guess_cc(text) or guess_cc_from_reply(text)
+    paid_via = guess_payment(text)
+    dtx = parse_date_pt(text)
+    amount = money_from_text(text)
+
+    cat_name, cat_matched = guess_category_explicit(text)
+
+    patch = {}
+    changes = []
+
+    if cc_code:
+        cc_id = ensure_cost_center_id(account_id, cc_code)
+        if cc_id:
+            patch["cost_center_id"] = cc_id
+            changes.append(f"CC → {cc_code}")
+            _set_last_cc(tg_user_id, cc_code)
+
+    if paid_via:
+        patch["paid_via"] = paid_via
+        changes.append(f"Pagamento → {paid_via}")
+
+    if dtx:
+        patch["entry_date"] = dtx
+        changes.append(f"Data → {data_fmt_out(dtx)}")
+
+    if amount is not None:
+        patch["amount"] = amount
+        changes.append(f"Valor → {moeda_fmt(float(amount))}")
+
+    if cat_matched:
+        cat_id = ensure_category_id(account_id, cat_name)
+        if cat_id:
+            patch["category_id"] = cat_id
+            changes.append(f"Categoria → {cat_name}")
+
+    if not patch:
+        return False, (
+            "Entendi que você quer corrigir, mas não identifiquei o que mudar.\n"
+            "Exemplos:\n"
+            "• não, era obra do Rodrigo\n"
+            "• foi no crédito\n"
+            "• corrige pra 13/12\n"
+            "• o valor era 250\n"
+        )
+
+    sb.table("entries").update(patch) \
+        .eq("id", entry_id) \
+        .eq("account_id", account_id) \
+        .eq("created_by", user_id) \
+        .execute()
+
+    return True, "✅ Ajustado: " + " | ".join(changes)
+
 # =====================================================================================
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
@@ -978,6 +1096,13 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 return
             else:
                 await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo.")
+                return
+
+        # ------------------ NOVO: correção inteligente do último lançamento ------------------
+        if is_correction_intent(user_text):
+            ok, msg = apply_correction_to_last_entry(uid, user_text)
+            await update.message.reply_text(msg if ok else f"⚠️ {msg}")
+            if ok:
                 return
 
         # seta CC sem valor
