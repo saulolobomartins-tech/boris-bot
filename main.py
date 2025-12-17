@@ -153,7 +153,17 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
 # ATENÇÃO À ORDEM: regras mais específicas primeiro.
 CATEGORY_RULES = [
     # Mão de obra (inclui instalação de ar condicionado)
-    (r"\b(mao\s*de\s*obra|m[aã]o\s*de\s*obra|diari(a|as)|pedreir|ajudant|servente|marceneir|soldador|aplicador|instal(a|aç)[aã]o\s+(de\s+)?(ar\s*condicionado|split|vrf)|montagem)\b", "Mão de Obra"),
+    (r"\b("
+ r"mao\s*de\s*obra|m[aã]o\s*de\s*obra|"
+ r"diari(a|as)|di[aá]ria(s)?|"
+ r"pedreir|ajudant|servente|"
+ r"encanador|bombeiro\s*hidraulico|bombeiro\s*hidráulico|"
+ r"eletricist(a|o)?|"
+ r"pintor|gesseir|drywall|montador|"
+ r"marceneir|carpinteir|serralheir|soldador|"
+ r"vidraceir|azulejist|"
+ r"aplicador|instal(a|aç)[aã]o|montagem"
+ r")\b", "Mão de Obra"),
 
     # Refrigeração / ar condicionado / tubulação / central
     (r"\b(refriger(a|aç)[aã]o|ar\s*condicionado|split|vrf|central\s+de\s+ar|tubula(c|ç)[aã]o|linha\s+de\s+cobre|cobre\s+para\s+ar|gas\s+refrigerante|flange|vacuometro|manifold)\b", "Refrigeração"),
