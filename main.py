@@ -60,6 +60,22 @@ def moeda_fmt(v: float) -> str:
 def get_or_none(res):
     return res.data if hasattr(res, "data") else res
 
+# === NOVO: formatação de data + emoji por tipo ===
+def data_fmt_out(iso: str | None) -> str | None:
+    if not iso:
+        return None
+    try:
+        d = datetime.date.fromisoformat(iso)
+        return d.strftime("%d/%m/%Y")
+    except Exception:
+        return iso
+
+def entry_emoji(etype: str | None) -> str:
+    return "✅" if etype == "income" else "⛔"
+
+def entry_label(etype: str | None) -> str:
+    return "Receita" if etype == "income" else "Despesa"
+
 # =====================================================================================
 #                              MULTI-TENANT (account_id)
 # =====================================================================================
@@ -290,13 +306,50 @@ def guess_cc_from_reply(txt: str) -> str | None:
 
     return None
 
+# === ATUALIZADO: entende dd/mm, dd/mm/aaaa, "12 de dezembro", "12 dezembro" (sem ano = ano atual) ===
 def parse_date_pt(txt: str) -> str | None:
     t = _norm(txt)
     today = date.today()
+
+    # atalhos
     if "hoje" in t: return today.isoformat()
     if "ontem" in t: return (today - timedelta(days=1)).isoformat()
     if "anteontem" in t: return (today - timedelta(days=2)).isoformat()
     if "amanha" in t: return (today + timedelta(days=1)).isoformat()
+
+    # dd/mm(/aaaa) ou dd-mm(-aaaa)
+    m = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b", t)
+    if m:
+        d = int(m.group(1))
+        mo = int(m.group(2))
+        y_raw = m.group(3)
+        y = int(y_raw) if y_raw else today.year
+        if y < 100:
+            y += 2000
+        try:
+            return date(y, mo, d).isoformat()
+        except Exception:
+            return None
+
+    # "12 de dezembro" / "12 dezembro" / ano opcional
+    months = {
+        "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
+        "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
+        "novembro": 11, "dezembro": 12
+    }
+    m2 = re.search(
+        r"\b(\d{1,2})\s*(?:de\s*)?(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(?:de\s*)?(\d{4})?\b",
+        t
+    )
+    if m2:
+        d = int(m2.group(1))
+        mo = months.get(m2.group(2))
+        y = int(m2.group(3)) if m2.group(3) else today.year
+        try:
+            return date(y, mo, d).isoformat()
+        except Exception:
+            return None
+
     return None
 
 def _first_day_of_week(d: date):
@@ -337,7 +390,7 @@ def parse_period_pt(text: str):
         e = today + timedelta(days=1)
         return s.isoformat(), e.isoformat(), "última quinzena"
 
-    # últimos X dias (número) — aceita "nos ultimos 15 dias"
+    # últimos X dias (número)
     m = re.search(r"\b(ultim[oa]s?|nos?\s+ultim[oa]s?)\s+(\d{1,3})\s+dias?\b", low)
     if m:
         n = int(m.group(2))
@@ -354,7 +407,7 @@ def parse_period_pt(text: str):
             e = today + timedelta(days=1)
             return s.isoformat(), e.isoformat(), f"últimos {n} dias"
 
-    # essa semana / nesta semana / nessa semana / essa semana / dessa semana
+    # essa semana
     if re.search(r"\b(essa|nesta|nessa|esta|dessa)\s+semana\b", low):
         s = _first_day_of_week(today)
         e = _last_day_of_week(today)
@@ -366,7 +419,7 @@ def parse_period_pt(text: str):
         s = e - timedelta(days=7)
         return s.isoformat(), e.isoformat(), "semana passada"
 
-    # este mês / nesse mês / desse mês
+    # este mês
     if re.search(r"\b(esse|este|nesse|neste|desse)\s+m[eê]s\b", low):
         s = today.replace(day=1)
         e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -466,8 +519,8 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         if amount is None:
             return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-        # força INCOME com termos de entrada
-        if re.search(r"\b(recebi|receita|entrada|entrou|vendi|aluguel\s+recebid|pagaram|pagou\s*pra\s+mim)\b", low):
+        # === ATUALIZADO: melhora detecção de INCOME (inclui "pix recebido") ===
+        if re.search(r"\b(receb(i|ido|ida|imento)|receita|entrada|entrou|vendi|pagaram|pagou\s+pra\s+mim|pix\s+recebid[oa])\b", low):
             etype = "income"
         else:
             etype = "expense"
@@ -505,7 +558,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
             "category_id": cat_id,
             "cost_center_id": cc_id,
             "paid_via": paid_via,
-            # workflow removido: mantemos approved só pra não quebrar DB se for obrigatório
             "status": "approved",
             "created_by": user_id,
         }
@@ -540,7 +592,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
                 "category": cat_name,
             }
         else:
-            # mesmo sem id retornado, guarda um cache mínimo (sem id)
             LAST_ENTRY_BY_TG_USER[tg_user_id] = {
                 "id": None,
                 "account_id": account_id,
@@ -648,14 +699,13 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entry_id = None
         meta = LAST_ENTRY_BY_TG_USER.get(tg_uid) or {}
 
-        # 2) Tenta usar o cache (mais confiável)
+        # 2) Tenta usar o cache
         if meta and meta.get("id") and meta.get("account_id") == account_id and meta.get("created_by") == user_id:
             entry_id = meta["id"]
 
         # 3) Fallback: busca no banco o último lançamento do usuário
         if not entry_id:
             try:
-                # tenta por created_at (mais correto)
                 r = sb.table("entries").select("id,amount,type,entry_date") \
                     .eq("account_id", account_id) \
                     .eq("created_by", user_id) \
@@ -666,7 +716,6 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     entry_id = rows[0]["id"]
                     meta = {**meta, **rows[0]}
             except Exception:
-                # fallback se não existir created_at: tenta por entry_date + id
                 r = sb.table("entries").select("id,amount,type,entry_date") \
                     .eq("account_id", account_id) \
                     .eq("created_by", user_id) \
@@ -688,12 +737,11 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 5) limpa cache
         LAST_ENTRY_BY_TG_USER.pop(tg_uid, None)
 
-        # resposta amigável
-        amt = meta.get("amount")
+        # === resposta padronizada (emoji + receita/despesa + dd/mm/aaaa) ===
         typ = meta.get("type")
-        dt  = meta.get("entry_date")
+        icon = entry_emoji(typ)
 
-        msg = "↩️ Desfeito: "
+        msg = f"{icon} Desfeito: "
         if typ == "income":
             msg += "última receita"
         elif typ == "expense":
@@ -702,13 +750,16 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += "último lançamento"
 
         extras = []
+        amt = meta.get("amount")
         if amt is not None:
             try:
                 extras.append(moeda_fmt(float(amt)))
             except Exception:
                 pass
+
+        dt = meta.get("entry_date")
         if dt:
-            extras.append(f"🗓️ {dt}")
+            extras.append(f"🗓️ {data_fmt_out(dt)}")
 
         if extras:
             msg += "\n" + " • ".join(extras)
@@ -823,12 +874,17 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 ok, res = save_entry(uid, pending["txt"], force_cc=cc)
                 if ok:
                     r = res
+                    etype = r.get("type")
+                    icon = entry_emoji(etype)
+                    label = entry_label(etype)
+
                     extras = []
                     if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
-                    if r.get("entry_date"): extras.append(f"🗓️ {r['entry_date']}")
+                    if r.get("entry_date"): extras.append(f"🗓️ {data_fmt_out(r['entry_date'])}")
                     tail = ("\n" + " • ".join(extras)) if extras else ""
+
                     await update.message.reply_text(
-                        f"✅ Lançado: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc']}{tail}"
+                        f"{icon} {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc']}{tail}"
                     )
                 else:
                     await update.message.reply_text(f"⚠️ {res}")
@@ -837,7 +893,7 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo.")
                 return
 
-        # seta CC sem valor (ex: "bloco a", "obra do Rodrigo")
+        # seta CC sem valor
         cc_only = guess_cc(user_text)
         if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text) and not is_saldo_intent(user_text):
             _set_last_cc(uid, cc_only)
@@ -849,7 +905,7 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await run_balance_and_reply(update, user_text)
             return
 
-        # relatório/consulta (gastos/receitas)
+        # relatório/consulta
         if is_report_intent(user_text):
             await run_query_and_reply(update, user_text)
             return
@@ -870,9 +926,12 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         ok, res = save_entry(uid, user_text)
         if ok:
             r = res
-            label = "Receita" if r.get("type") == "income" else "Lançado"
+            etype = r.get("type")
+            icon = entry_emoji(etype)
+            label = entry_label(etype)
+
             extras = []
-            if r.get("entry_date"): extras.append(f"🗓️ {r['entry_date']}")
+            if r.get("entry_date"): extras.append(f"🗓️ {data_fmt_out(r['entry_date'])}")
             if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
             if r.get("used_last_cc") and r.get("cc"): extras.append(f"📌 CC assumido: {r['cc']}")
             tail = ("\n" + " • ".join(extras)) if extras else ""
@@ -882,14 +941,16 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 hint = "\nSe não for esse CC, manda: Bloco A / Sede / obra do <nome> (que eu ajusto pro próximo)."
 
             await update.message.reply_text(
-                f"✅ {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'}{tail}{hint}"
+                f"{icon} {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'}{tail}{hint}"
             )
         else:
             await update.message.reply_text(
                 f"⚠️ {res}\n\n"
                 "Exemplos:\n"
                 "• paguei 200 no eletricista (pix) bloco A\n"
+                "• pix recebido 1554,21 obra do Rodrigo\n"
                 "• recebi 1200 do cliente pix sede\n"
+                "• recebi 1554,21 em 13/12 obra do Rodrigo\n"
                 "• /desfazer (desfaz o último lançamento)\n"
                 "• /resumo (resumo semanal)\n"
                 "• quanto entrou nesse mês?\n"
@@ -936,7 +997,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # mantém simples: só ativa o usuário. (workflow/roles não são usados no financeiro agora)
     u = update.effective_user
     you = _get_user_row(u.id)
 
@@ -1129,7 +1189,7 @@ tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("saldo", cmd_saldo))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
 tg_app.add_handler(CommandHandler("resumo", cmd_resumo))     # ✅
-tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer)) # ✅ NOVO
+tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer)) # ✅
 
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
