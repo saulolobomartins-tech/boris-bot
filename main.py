@@ -237,19 +237,6 @@ QUERY_INTENT_RE = re.compile(
 )
 SALDO_INTENT_RE = re.compile(r"\b(saldo(\s+atual)?|balanc(o|co)|balanco)\b", re.I)
 
-# ------------------ NOVO: intenção de correção ------------------
-CORRECTION_INTENT_RE = re.compile(
-    r"\b("
-    r"corrig(e|ir|e ai)|ajust(a|ar)|retific(a|ar)|"
-    r"nao\s+era|não\s+era|era\s+(na|no)|foi\s+(na|no)|"
-    r"na\s+verdade|errei|troca\s+pra|muda\s+pra"
-    r")\b",
-    re.I
-)
-
-def is_correction_intent(text: str) -> bool:
-    return bool(CORRECTION_INTENT_RE.search(text or ""))
-
 # =====================================================================================
 #                               PARSE DE TEXTO
 # =====================================================================================
@@ -264,7 +251,6 @@ def money_from_text(txt: str):
     """
     s = _norm(txt).replace("r$", "r$ ").strip()
 
-    # captura candidatos com possível milhar e decimal
     candidates = list(re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s))
     if not candidates:
         return None
@@ -273,7 +259,6 @@ def money_from_text(txt: str):
         token = token.replace(".", "").replace(",", ".")
         return float(token)
 
-    # 1) tenta achar número que esteja colado em "reais/real" (até 12 chars após)
     for m in candidates:
         after = s[m.end(): m.end() + 12]
         before = s[max(0, m.start()-6): m.start()]
@@ -283,7 +268,6 @@ def money_from_text(txt: str):
             except Exception:
                 continue
 
-    # 2) fallback: pega o ÚLTIMO número
     last = candidates[-1]
     try:
         return round(to_float(last.group(0)), 2)
@@ -303,18 +287,6 @@ def guess_category(txt: str):
         if re.search(pat, low):
             return cat
     return DEFAULT_CATEGORY
-
-# ------------------ NOVO: só muda categoria se bater regra ------------------
-def guess_category_explicit(txt: str):
-    """
-    Retorna (cat, matched_bool)
-    matched_bool = True só se alguma regra bater (não conta fallback 'Outros')
-    """
-    low = _norm(txt)
-    for pat, cat in CATEGORY_RULES:
-        if re.search(pat, low):
-            return cat, True
-    return DEFAULT_CATEGORY, False
 
 def _slugify_name(name: str) -> str:
     s = _norm(name)
@@ -372,7 +344,6 @@ def guess_cc_from_reply(txt: str) -> str | None:
 
     return None
 
-# entende dd/mm, dd/mm/aaaa, "12 de dezembro", "12 dezembro" (sem ano = ano atual)
 def parse_date_pt(txt: str) -> str | None:
     t = _norm(txt)
     today = date.today()
@@ -528,7 +499,6 @@ def is_saldo_intent(text: str):
     return bool(SALDO_INTENT_RE.search(text or ""))
 
 def is_summary_request(text: str):
-    # "resumo ..." / "relatorio ..." (inclui obra)
     t = _norm(text or "")
     return bool(re.search(r"\b(resumo|relatorio|relatório)\b", t))
 
@@ -558,6 +528,36 @@ def _set_last_cc(tg_user_id: int, cc_code: str):
     try:
         sb.table("users").update({"last_cc": cc_code}).eq("tg_user_id", tg_user_id).execute()
     except Exception:
+        pass
+
+# --- NOVO: persistência do "último lançamento" no banco (não depende de RAM) ---
+def _get_last_entry_id_from_db(tg_user_id: int) -> str | None:
+    """
+    Lê users.last_entry_id (se existir).
+    Se a coluna não existir ainda, falha silenciosamente e volta None.
+    """
+    try:
+        r = sb.table("users").select("last_entry_id").eq("tg_user_id", tg_user_id).limit(1).execute()
+        rows = get_or_none(r) or []
+        if rows and rows[0].get("last_entry_id"):
+            return rows[0]["last_entry_id"]
+    except Exception:
+        return None
+    return None
+
+def _set_last_entry_id_to_db(tg_user_id: int, entry_id: str | None):
+    """
+    Atualiza users.last_entry_id + users.last_entry_at (se as colunas existirem).
+    Se as colunas não existirem ainda, falha silenciosamente.
+    """
+    try:
+        payload = {
+            "last_entry_id": entry_id,
+            "last_entry_at": datetime.datetime.utcnow().isoformat()
+        }
+        sb.table("users").update(payload).eq("tg_user_id", tg_user_id).execute()
+    except Exception:
+        # Se ainda não criou as colunas no Supabase, não quebra o bot.
         pass
 
 # =====================================================================================
@@ -630,6 +630,7 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         if cc_code:
             _set_last_cc(tg_user_id, cc_code)
 
+        # cache em RAM (continua existindo)
         if created_row and isinstance(created_row, dict) and created_row.get("id"):
             LAST_ENTRY_BY_TG_USER[tg_user_id] = {
                 "id": created_row["id"],
@@ -653,6 +654,10 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
                 "category": cat_name,
             }
 
+        # --- NOVO: persistir último lançamento no banco (à prova de restart/2 instâncias) ---
+        if created_row and isinstance(created_row, dict) and created_row.get("id"):
+            _set_last_entry_id_to_db(tg_user_id, created_row["id"])
+
         return True, {
             "amount": amount,
             "type": etype,
@@ -665,99 +670,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
 
     except Exception as e:
         return False, f"Erro interno no save_entry: {type(e).__name__}: {e}"
-
-# ------------------ NOVO: buscar último lançamento no banco ------------------
-def _get_last_entry_id_db(account_id: str, user_id: str) -> str | None:
-    try:
-        r = sb.table("entries").select("id") \
-            .eq("account_id", account_id) \
-            .eq("created_by", user_id) \
-            .order("created_at", desc=True) \
-            .limit(1).execute()
-        rows = get_or_none(r) or []
-        return rows[0]["id"] if rows else None
-    except Exception:
-        r = sb.table("entries").select("id") \
-            .eq("account_id", account_id) \
-            .eq("created_by", user_id) \
-            .order("entry_date", desc=True) \
-            .order("id", desc=True) \
-            .limit(1).execute()
-        rows = get_or_none(r) or []
-        return rows[0]["id"] if rows else None
-
-# ------------------ NOVO: aplicar correção no último lançamento ------------------
-def apply_correction_to_last_entry(tg_user_id: int, text: str):
-    user_row = _get_user_row(tg_user_id)
-    if not user_row or not user_row.get("is_active"):
-        return False, "Usuário não autorizado."
-
-    user_id = user_row["id"]
-    account_id = user_row.get("account_id") or get_default_account_id()
-
-    # cache -> fallback banco
-    entry_id = None
-    meta = LAST_ENTRY_BY_TG_USER.get(tg_user_id) or {}
-    if meta.get("account_id") == account_id and meta.get("created_by") == user_id and meta.get("id"):
-        entry_id = meta["id"]
-    if not entry_id:
-        entry_id = _get_last_entry_id_db(account_id, user_id)
-
-    if not entry_id:
-        return False, "Não achei nenhum lançamento recente pra corrigir."
-
-    cc_code = guess_cc(text) or guess_cc_from_reply(text)
-    paid_via = guess_payment(text)
-    dtx = parse_date_pt(text)
-    amount = money_from_text(text)
-
-    cat_name, cat_matched = guess_category_explicit(text)
-
-    patch = {}
-    changes = []
-
-    if cc_code:
-        cc_id = ensure_cost_center_id(account_id, cc_code)
-        if cc_id:
-            patch["cost_center_id"] = cc_id
-            changes.append(f"CC → {cc_code}")
-            _set_last_cc(tg_user_id, cc_code)
-
-    if paid_via:
-        patch["paid_via"] = paid_via
-        changes.append(f"Pagamento → {paid_via}")
-
-    if dtx:
-        patch["entry_date"] = dtx
-        changes.append(f"Data → {data_fmt_out(dtx)}")
-
-    if amount is not None:
-        patch["amount"] = amount
-        changes.append(f"Valor → {moeda_fmt(float(amount))}")
-
-    if cat_matched:
-        cat_id = ensure_category_id(account_id, cat_name)
-        if cat_id:
-            patch["category_id"] = cat_id
-            changes.append(f"Categoria → {cat_name}")
-
-    if not patch:
-        return False, (
-            "Entendi que você quer corrigir, mas não identifiquei o que mudar.\n"
-            "Exemplos:\n"
-            "• não, era obra do Rodrigo\n"
-            "• foi no crédito\n"
-            "• corrige pra 13/12\n"
-            "• o valor era 250\n"
-        )
-
-    sb.table("entries").update(patch) \
-        .eq("id", entry_id) \
-        .eq("account_id", account_id) \
-        .eq("created_by", user_id) \
-        .execute()
-
-    return True, "✅ Ajustado: " + " | ".join(changes)
 
 # =====================================================================================
 #                               CONSULTAS / RELATÓRIOS
@@ -823,6 +735,7 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         tg_uid = update.effective_user.id
 
+        # 1) se tem pendência (CC), cancela
         if tg_uid in PENDING_BY_USER:
             PENDING_BY_USER.pop(tg_uid, None)
             await update.message.reply_text("↩️ Beleza. Pendência cancelada (não lancei nada).")
@@ -839,9 +752,28 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entry_id = None
         meta = LAST_ENTRY_BY_TG_USER.get(tg_uid) or {}
 
-        if meta and meta.get("id") and meta.get("account_id") == account_id and meta.get("created_by") == user_id:
-            entry_id = meta["id"]
+        # 2) NOVO: tenta usar users.last_entry_id (à prova de restart/instância)
+        db_last_entry_id = _get_last_entry_id_from_db(tg_uid)
+        if db_last_entry_id:
+            # valida que é desse user e dessa account
+            try:
+                r = sb.table("entries").select("id,amount,type,entry_date,account_id,created_by") \
+                    .eq("id", db_last_entry_id).limit(1).execute()
+                rows = get_or_none(r) or []
+                if rows:
+                    row = rows[0]
+                    if row.get("account_id") == account_id and row.get("created_by") == user_id:
+                        entry_id = row["id"]
+                        meta = {**meta, **row}
+            except Exception:
+                pass
 
+        # 3) fallback: cache em RAM (se existir)
+        if not entry_id:
+            if meta and meta.get("id") and meta.get("account_id") == account_id and meta.get("created_by") == user_id:
+                entry_id = meta["id"]
+
+        # 4) fallback final: busca no banco pelo último created_by
         if not entry_id:
             try:
                 r = sb.table("entries").select("id,amount,type,entry_date") \
@@ -870,7 +802,12 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         sb.table("entries").delete().eq("id", entry_id).execute()
+
+        # limpa cache RAM
         LAST_ENTRY_BY_TG_USER.pop(tg_uid, None)
+
+        # NOVO: limpa ponteiro persistido no DB (pra não tentar apagar de novo)
+        _set_last_entry_id_to_db(tg_uid, None)
 
         typ = meta.get("type")
         icon = entry_emoji(typ)
@@ -1003,7 +940,6 @@ async def run_cc_full_summary(update: Update, text: str):
         await update.message.reply_text("Me diz qual obra/centro de custo. Ex: 'resumo da obra do Rodrigo'.")
         return
 
-    # resolve cost_center_id
     cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
     ccd = get_or_none(cc) or []
     if not ccd:
@@ -1098,13 +1034,6 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo.")
                 return
 
-        # ------------------ NOVO: correção inteligente do último lançamento ------------------
-        if is_correction_intent(user_text):
-            ok, msg = apply_correction_to_last_entry(uid, user_text)
-            await update.message.reply_text(msg if ok else f"⚠️ {msg}")
-            if ok:
-                return
-
         # seta CC sem valor
         cc_only = guess_cc(user_text)
         if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text) and not is_saldo_intent(user_text):
@@ -1112,17 +1041,17 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await update.message.reply_text(f"✅ Centro de custo atual definido: {cc_only}")
             return
 
-        # saldo (com suporte a "saldo da obra do rodrigo" -> filtra por CC)
+        # saldo
         if is_saldo_intent(user_text):
             await run_balance_and_reply(update, user_text)
             return
 
-        # resumo/relatório por obra (mostra despesas + receitas + tops)
+        # resumo por obra
         if is_summary_request(user_text) and guess_cc_filter(user_text):
             await run_cc_full_summary(update, user_text)
             return
 
-        # relatório/consulta (gastos/receitas totais)
+        # relatório/consulta
         if is_report_intent(user_text):
             await run_query_and_reply(update, user_text)
             return
@@ -1198,6 +1127,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "is_active": False,
             "account_id": default_account_id,
             "last_cc": None
+            # OBS: last_entry_id/last_entry_at são opcionais no banco (se existirem)
         }).execute()
     else:
         upd = {}
@@ -1205,8 +1135,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upd["account_id"] = default_account_id
         if "last_cc" not in data[0]:
             upd["last_cc"] = None
+        # não força last_entry_id aqui (pode não existir a coluna)
         if upd:
-            sb.table("users").update(upd).eq("tg_user_id", u.id).execute()
+            try:
+                sb.table("users").update(upd).eq("tg_user_id", u.id).execute()
+            except Exception:
+                pass
 
     await update.message.reply_text(
         f"Fala, {u.first_name}! Eu sou o Boris.\n"
