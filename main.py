@@ -50,7 +50,6 @@ def _norm(s: str) -> str:
     s = (s or "").lower().strip()
     s = unicodedata.normalize("NFD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
-    # normaliza espaços
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -60,7 +59,7 @@ def moeda_fmt(v: float) -> str:
 def get_or_none(res):
     return res.data if hasattr(res, "data") else res
 
-# === NOVO: formatação de data + emoji por tipo ===
+# === formatação de data + emoji por tipo ===
 def data_fmt_out(iso: str | None) -> str | None:
     if not iso:
         return None
@@ -135,7 +134,6 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
         if rows:
             return rows[0]["id"]
 
-        # cria se não existir (pra casos tipo OBRA_RODRIGO)
         ins = sb.table("cost_centers").insert({"account_id": account_id, "code": code, "name": code}).execute()
         created = get_or_none(ins) or []
         if created:
@@ -151,26 +149,52 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
 #                              REGRAS & DICIONÁRIOS
 # =====================================================================================
 
+# IMPORTANTE: ordem importa (primeira regra que bater vence)
 CATEGORY_RULES = [
-    (r"\b(mao\s*de\s*obra|m[aã]o\s*de\s*obra|diari(a|as)|pedreir|ajudant|servente|marceneir|soldador|aplicador)\b", "Mão de Obra"),
+    # 6) instalação de ar condicionado => Mão de Obra (prioridade máxima)
+    (r"\b(instal(a|ação|acao)\s*(de)?\s*(ar\s*condicionad|split|central\s*de\s*ar)|manutenc(a|ã)o\s*(de)?\s*(ar\s*condicionad|split|central\s*de\s*ar)|higieniz(a|ação|acao)\s*(de)?\s*(ar\s*condicionad|split))\b", "Mão de Obra"),
+
+    # 4/7) refrigeração / ar-condicionado (material + tubulação + linha frigorígena etc.)
+    (r"\b(ar\s*condicionad|split|central\s*de\s*ar|refriger(a|ação|acao)|linha\s*frigorigen(a|a)|tubula(c|ç)(a|ã)o\s*(de)?\s*ar|tubo\s*de\s*cobre|cobre\s*(p/|para)\s*ar|isolament(o|a)\s*(de)?\s*tubo|dreno\s*(do)?\s*ar|gas\s*refrigerante|refrigerante\s*(r\d+)?|vacuo|v[aá]cuo|flare|manifold|serpentin(a|as)|evaporador(a|as)|condensador(a|as)|condensadora|evaporadora)\b", "Refrigeração/Ar-Condicionado"),
+
+    # regra geral de mão de obra
+    (r"\b(mao\s*de\s*obra|m[aã]o\s*de\s*obra|diari(a|as)|pedreir|ajudant|servente|marceneir|soldador|aplicador|instalador)\b", "Mão de Obra"),
+
     (r"\b(eletricist|eletric(a|o)?|fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric)\b", "Elétrico"),
+
     (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanador|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|pvc\b|joelho|te\b|luva\b|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba|sifao|sifão)\b", "Hidráulico"),
+
     (r"\b(drywall|forro|gesso|placa\s*acartonad)\b", "Drywall/Gesso"),
     (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray)\b", "Pintura"),
     (r"\b(fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento)\b", "Estrutura/Alvenaria"),
-    (r"\b(telha|calha|rufo|cumeeira|aluminio|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
+
+    # 5) porta/janela alumínio => Esquadrias (e não Cobertura)
+    (r"\b(porta(s)?|janela(s)?|vidro|esquadria(s)?|fechadur(a|as)|dobradi[cç]a|temperado|kit\s*porta)\b", "Esquadrias/Vidro"),
+    (r"\b(porta(s)?|janela(s)?|esquadria(s)?)\s*(de)?\s*aluminio\b", "Esquadrias/Vidro"),
+
+    # Cobertura (REMOVIDO "aluminio" pra não roubar portas/janelas)
+    (r"\b(telha|calha|rufo|cumeeira|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
+
     (r"\b(granito|porcelanato|piso|rodape|revestimento|rejunte|massa\s*acrilica|silicone|acabamento|azulejo)\b", "Acabamento"),
-    (r"\b(porta(s)?|janela(s)?|vidro|esquadria|fechadur(a|as)|dobradi[cç]a|temperado|kit\s*porta)\b", "Esquadrias/Vidro"),
     (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
     (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
     (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
     (r"\b(uber|frete|entrega|logistic(a|o)?|carretinha|transport(e|adora)?)\b", "Logística"),
-    (r"\b(combust(iv|í)vel|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto)\b", "Combustível"),
+
+    # 3) abastecimento => Combustível
+    (r"\b(abastec(imento|er)|combust(iv|í)vel|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto)\b", "Combustível"),
+
     (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|munck|plataforma|guindaste)\b", "Equipamentos"),
     (r"\b(trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio)\b", "Marketing"),
-    (r"\b(aluguel|internet|energia|conta\s*de\s*luz|conta\s*de\s*agua|agua|telefone|contabilidade|escritorio)\b", "Custos Fixos"),
+
+    # 1) água pra beber => Alimentação (e não Custos Fixos)
+    (r"\b(agua\s*(pra|para)\s*beber|agua\s*mineral|garrafa\s*d'?agua|garrafao\s*d'?agua|cop(o|os)\s*d'?agua|agua\s*de\s*beber)\b", "Alimentação"),
+    (r"\b(comida(s)?|refeic(a|ã)o|refei[cç][oõ]es|lanche(s)?|marmit(a|as)|quentinha(s)?|almo[cç]o(s)?|jantar(es)?|restaurante(s)?|cafe|café|refrigerante)\b", "Alimentação"),
+
+    # Custos fixos (REMOVIDO "agua" solto — fica só conta de água)
+    (r"\b(aluguel|internet|energia|conta\s*de\s*luz|conta\s*de\s*agua|conta\s*de\s*água|telefone|contabilidade|escritorio)\b", "Custos Fixos"),
+
     (r"\b(taxa|emolumento|cartorio|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof)\b", "Taxas/Financeiro"),
-    (r"\b(comida(s)?|refeic(a|ã)o|refei[cç][oõ]es|lanche(s)?|marmit(a|as)|quentinha(s)?|almo[cç]o(s)?|jantar(es)?|restaurante(s)?|cafe|café)\b", "Alimentação"),
 ]
 DEFAULT_CATEGORY = "Outros"
 
@@ -182,7 +206,6 @@ PAYMENT_SYNONYMS = {
     "VALE":     r"\bvale\b|\badiantamento\b",
 }
 
-# intents de consulta
 QUERY_INTENT_RE = re.compile(
     r"\b("
     r"quanto\s+(eu\s+)?gastei|"
@@ -205,12 +228,55 @@ SALDO_INTENT_RE = re.compile(r"\b(saldo(\s+atual)?|balanc(o|co)|balanco)\b", re.
 def money_from_text(txt: str):
     """
     Aceita: 200 | 200,00 | 7.300 | 7.300,00 | R$ 7.300,00
+    Melhora: se tiver "reais/real", pega o número mais próximo ANTES disso
+    (corrige caso "4 refeições ... 51 reais" -> pega 51, não 4)
     """
-    s = _norm(txt).replace("r$", "").replace(" ", "")
-    m = re.search(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s)
-    if not m:
+    if not txt:
         return None
-    raw = m.group(0).replace(".", "").replace(",", ".")
+
+    t_raw = txt
+    t = _norm(txt)
+
+    # acha todos os candidatos numéricos
+    # exemplos: 51 | 51,00 | 1.554,21 | 7300 | 7.300,00
+    cand = []
+    for m in re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", t_raw):
+        cand.append((m.group(0), m.start(), m.end()))
+    if not cand:
+        return None
+
+    # 1) se tiver "reais" ou "real", pega o último número ANTES disso
+    idx_reais = None
+    m_reais = re.search(r"\b(reais|real)\b", t)
+    if m_reais:
+        idx_reais = m_reais.start()
+
+    if idx_reais is not None:
+        best = None
+        for raw, s, e in cand:
+            if e <= idx_reais:
+                best = raw
+        if best is not None:
+            raw = best.replace(".", "").replace(",", ".")
+            try:
+                return round(float(raw), 2)
+            except Exception:
+                return None
+
+    # 2) se tiver "r$", pega o primeiro número depois de r$
+    m_rs = re.search(r"r\$\s*", t_raw.lower())
+    if m_rs:
+        pos = m_rs.end()
+        for raw, s, e in cand:
+            if s >= pos:
+                raw2 = raw.replace(".", "").replace(",", ".")
+                try:
+                    return round(float(raw2), 2)
+                except Exception:
+                    return None
+
+    # 3) fallback: pega o ÚLTIMO número da frase
+    raw = cand[-1][0].replace(".", "").replace(",", ".")
     try:
         return round(float(raw), 2)
     except Exception:
@@ -240,37 +306,35 @@ def guess_cc(txt: str) -> str | None:
     Reconhece:
       - "bloco a", "bloco b", "setor a", "bloco 1" etc -> BLOCO_A ...
       - "sede", "administrativo" -> SEDE
-      - "obra do rodrigo", "reforma da joana", "container de castanhal" -> OBRA_RODRIGO / REFORMA_JOANA / CONTAINER_CASTANHAL
+      - "obra do rodrigo", "reforma da joana", "container de castanhal" -> OBRA_RODRIGO / ...
+    Protege contra falso positivo em "mão de obra" (não pode virar CC).
     """
     t = _norm(txt)
 
-    # sede / administrativo
     if re.search(r"\b(sede|administrativo|adm)\b", t):
         return "SEDE"
 
-    # bloco por letra: bloco a/b/c...
     m = re.search(r"\b(bloco|setor)\s+([a-f])\b", t)
     if m:
         return f"BLOCO_{m.group(2).upper()}"
 
-    # bloco por número (mapeamento 1->A ... 6->F)
     m = re.search(r"\b(bloco|setor)\s+([1-6])\b", t)
     if m:
         num = int(m.group(2))
         letter = "ABCDEF"[num - 1]
         return f"BLOCO_{letter}"
 
-    # já veio no padrão "BLOCO_A" etc
     m = re.search(r"\b(blo(co)?_[a-f])\b", t)
     if m:
         return m.group(1).replace("co_", "co_").upper()
 
-    # obra/reforma/container + nome
-    m = re.search(r"\b(?:na|no)?\s*(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
-    if m:
+    # obra/reforma/container + nome (evita pegar "de obra" de "mão de obra")
+    for m in re.finditer(r"\b(?:na|no)?\s*(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t):
+        start = m.start()
+        if start >= 3 and t[start-3:start] == "de ":
+            continue  # evita "mao de obra"
         tipo = m.group(1)
         nome = m.group(2).strip()
-        # corta quando começa outro comando/ação
         nome = re.split(
             r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto)\b",
             nome
@@ -281,43 +345,33 @@ def guess_cc(txt: str) -> str | None:
     return None
 
 def guess_cc_from_reply(txt: str) -> str | None:
-    """
-    Quando o usuário responde só "Rodrigo" ou "Bloco A" na pendência.
-    """
     t = _norm(txt)
 
-    # tenta normal
     cc = guess_cc(t)
     if cc:
         return cc
 
-    # "a", "b", ...
     if re.fullmatch(r"[a-f]", t):
         return f"BLOCO_{t.upper()}"
 
-    # "1".."6"
     if re.fullmatch(r"[1-6]", t):
         letter = "ABCDEF"[int(t) - 1]
         return f"BLOCO_{letter}"
 
-    # qualquer nome curto vira obra
     if len(t) <= 40 and re.fullmatch(r"[a-z0-9][a-z0-9\s._-]*", t):
         return f"OBRA_{_slugify_name(t)}"
 
     return None
 
-# === ATUALIZADO: entende dd/mm, dd/mm/aaaa, "12 de dezembro", "12 dezembro" (sem ano = ano atual) ===
 def parse_date_pt(txt: str) -> str | None:
     t = _norm(txt)
     today = date.today()
 
-    # atalhos
     if "hoje" in t: return today.isoformat()
     if "ontem" in t: return (today - timedelta(days=1)).isoformat()
     if "anteontem" in t: return (today - timedelta(days=2)).isoformat()
     if "amanha" in t: return (today + timedelta(days=1)).isoformat()
 
-    # dd/mm(/aaaa) ou dd-mm(-aaaa)
     m = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b", t)
     if m:
         d = int(m.group(1))
@@ -331,7 +385,6 @@ def parse_date_pt(txt: str) -> str | None:
         except Exception:
             return None
 
-    # "12 de dezembro" / "12 dezembro" / ano opcional
     months = {
         "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
         "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
@@ -356,12 +409,9 @@ def _first_day_of_week(d: date):
     return d - timedelta(days=d.weekday())
 
 def _last_day_of_week(d: date):
-    return _first_day_of_week(d) + timedelta(days=7)  # exclusivo
+    return _first_day_of_week(d) + timedelta(days=7)
 
 def parse_period_pt(text: str):
-    """
-    Retorna (start_date_iso, end_date_iso_exclusive, label)
-    """
     low = _norm(text)
     today = date.today()
 
@@ -384,13 +434,11 @@ def parse_period_pt(text: str):
     def word_to_number(w):
         return NUM_WORDS.get(w)
 
-    # última quinzena
     if re.search(r"\b(ultima|última)\s+quinzena\b", low):
         s = today - timedelta(days=15)
         e = today + timedelta(days=1)
         return s.isoformat(), e.isoformat(), "última quinzena"
 
-    # últimos X dias (número)
     m = re.search(r"\b(ultim[oa]s?|nos?\s+ultim[oa]s?)\s+(\d{1,3})\s+dias?\b", low)
     if m:
         n = int(m.group(2))
@@ -398,7 +446,6 @@ def parse_period_pt(text: str):
         e = today + timedelta(days=1)
         return s.isoformat(), e.isoformat(), f"últimos {n} dias"
 
-    # últimos X dias (por extenso)
     m = re.search(r"\b(ultim[oa]s?)\s+([a-zçãõ]+)\s+dias?\b", low)
     if m:
         n = word_to_number(m.group(2))
@@ -407,32 +454,27 @@ def parse_period_pt(text: str):
             e = today + timedelta(days=1)
             return s.isoformat(), e.isoformat(), f"últimos {n} dias"
 
-    # essa semana
     if re.search(r"\b(essa|nesta|nessa|esta|dessa)\s+semana\b", low):
         s = _first_day_of_week(today)
         e = _last_day_of_week(today)
         return s.isoformat(), e.isoformat(), "essa semana"
 
-    # semana passada
     if re.search(r"\bsemana\s+passada\b", low):
         e = _first_day_of_week(today)
         s = e - timedelta(days=7)
         return s.isoformat(), e.isoformat(), "semana passada"
 
-    # este mês
     if re.search(r"\b(esse|este|nesse|neste|desse)\s+m[eê]s\b", low):
         s = today.replace(day=1)
         e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
         return s.isoformat(), e.isoformat(), "este mês"
 
-    # mês passado
     if re.search(r"\bm[eê]s\s+passado\b", low):
         s_atual = today.replace(day=1)
         e_passado = s_atual
         s_passado = (s_atual - timedelta(days=1)).replace(day=1)
         return s_passado.isoformat(), e_passado.isoformat(), "mês passado"
 
-    # hoje / ontem
     if re.search(r"\bhoje\b", low):
         return today.isoformat(), (today + timedelta(days=1)).isoformat(), "hoje"
 
@@ -440,7 +482,6 @@ def parse_period_pt(text: str):
         y = today - timedelta(days=1)
         return y.isoformat(), today.isoformat(), "ontem"
 
-    # fallback: mês atual
     s = today.replace(day=1)
     e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
     return s.isoformat(), e.isoformat(), "este mês (padrão)"
@@ -481,9 +522,6 @@ def is_saldo_intent(text: str):
 # =====================================================================================
 
 PENDING_BY_USER: dict[int, dict] = {}
-
-# Cache do último lançamento por usuário (melhor caminho p/ /desfazer)
-# Obs: em restart do Render isso zera — por isso tem fallback no banco.
 LAST_ENTRY_BY_TG_USER: dict[int, dict] = {}
 
 def _get_user_row(tg_user_id: int) -> dict | None:
@@ -519,7 +557,7 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         if amount is None:
             return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-        # === ATUALIZADO: melhora detecção de INCOME (inclui "pix recebido") ===
+        # detecção de INCOME (inclui "pix recebido")
         if re.search(r"\b(receb(i|ido|ida|imento)|receita|entrada|entrou|vendi|pagaram|pagou\s+pra\s+mim|pix\s+recebid[oa])\b", low):
             etype = "income"
         else:
@@ -563,14 +601,11 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         }
 
         created_row = None
-
-        # tenta inserir com paid_via
         try:
             ins_res = sb.table("entries").insert(payload).execute()
             created = get_or_none(ins_res) or []
             created_row = created[0] if created else None
         except Exception:
-            # fallback se coluna paid_via não existir
             payload.pop("paid_via", None)
             ins_res = sb.table("entries").insert(payload).execute()
             created = get_or_none(ins_res) or []
@@ -579,7 +614,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         if cc_code:
             _set_last_cc(tg_user_id, cc_code)
 
-        # guarda cache do último lançamento (pra /desfazer)
         if created_row and isinstance(created_row, dict) and created_row.get("id"):
             LAST_ENTRY_BY_TG_USER[tg_user_id] = {
                 "id": created_row["id"],
@@ -620,7 +654,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
 #                               CONSULTAS / RELATÓRIOS
 # =====================================================================================
 
-# =================== /resumo (semanal) ===================
 async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_row = _get_user_row(update.effective_user.id)
@@ -677,12 +710,10 @@ async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /resumo: {type(e).__name__}: {e}")
 
-# =================== /desfazer (último lançamento do usuário) ===================
 async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         tg_uid = update.effective_user.id
 
-        # 1) Se estava pendente de CC, desfaz a pendência (não chegou a lançar)
         if tg_uid in PENDING_BY_USER:
             PENDING_BY_USER.pop(tg_uid, None)
             await update.message.reply_text("↩️ Beleza. Pendência cancelada (não lancei nada).")
@@ -699,11 +730,9 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entry_id = None
         meta = LAST_ENTRY_BY_TG_USER.get(tg_uid) or {}
 
-        # 2) Tenta usar o cache
         if meta and meta.get("id") and meta.get("account_id") == account_id and meta.get("created_by") == user_id:
             entry_id = meta["id"]
 
-        # 3) Fallback: busca no banco o último lançamento do usuário
         if not entry_id:
             try:
                 r = sb.table("entries").select("id,amount,type,entry_date") \
@@ -731,13 +760,9 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("↩️ Não encontrei nenhum lançamento recente pra desfazer.")
             return
 
-        # 4) Apaga
         sb.table("entries").delete().eq("id", entry_id).execute()
-
-        # 5) limpa cache
         LAST_ENTRY_BY_TG_USER.pop(tg_uid, None)
 
-        # === resposta padronizada (emoji + receita/despesa + dd/mm/aaaa) ===
         typ = meta.get("type")
         icon = entry_emoji(typ)
 
@@ -818,9 +843,6 @@ async def run_query_and_reply(update: Update, text: str):
     )
 
 async def run_balance_and_reply(update: Update, text: str):
-    """
-    Saldo = receitas - despesas no período (com filtro de CC se tiver).
-    """
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
         await update.message.reply_text("Usuário não autorizado.")
@@ -866,7 +888,6 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if not user_text:
             return
 
-        # pendência esperando CC
         if uid in PENDING_BY_USER:
             cc = guess_cc_from_reply(user_text)
             if cc:
@@ -893,24 +914,20 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo.")
                 return
 
-        # seta CC sem valor
         cc_only = guess_cc(user_text)
         if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text) and not is_saldo_intent(user_text):
             _set_last_cc(uid, cc_only)
             await update.message.reply_text(f"✅ Centro de custo atual definido: {cc_only}")
             return
 
-        # saldo
         if is_saldo_intent(user_text):
             await run_balance_and_reply(update, user_text)
             return
 
-        # relatório/consulta
         if is_report_intent(user_text):
             await run_query_and_reply(update, user_text)
             return
 
-        # se não tem CC nem last_cc e tem valor -> pede CC
         cc_in_text = guess_cc(user_text)
         last_cc = _get_last_cc(uid)
 
@@ -1022,9 +1039,6 @@ async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Usuário {target} autorizado ✅")
 
 async def cmd_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /obra Rodrigo  -> define CC atual (OBRA_RODRIGO)
-    """
     name = " ".join(context.args).strip()
     if not name:
         await update.message.reply_text("Uso: /obra <nome>. Ex: /obra Rodrigo")
@@ -1052,9 +1066,6 @@ async def cmd_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await run_balance_and_reply(update, txt or "este mês")
 
 async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Resumo do mês por categoria e CC (despesas) filtrando por conta.
-    """
     try:
         user_row = _get_user_row(update.effective_user.id)
         if not user_row or not user_row.get("is_active"):
@@ -1103,11 +1114,9 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /relatorio: {type(e).__name__}: {e}")
 
-# -------------------- TEXTO --------------------
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_user_text(update, context, update.message.text or "")
 
-# -------------------- ÁUDIO (voice/audio) — robusto + debug --------------------
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not oa_client:
         await update.message.reply_text("Whisper não está configurado (OPENAI_API_KEY ausente).")
@@ -1188,8 +1197,8 @@ tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
 tg_app.add_handler(CommandHandler("receita", cmd_receita))
 tg_app.add_handler(CommandHandler("saldo", cmd_saldo))
 tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
-tg_app.add_handler(CommandHandler("resumo", cmd_resumo))     # ✅
-tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer)) # ✅
+tg_app.add_handler(CommandHandler("resumo", cmd_resumo))
+tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer))
 
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
