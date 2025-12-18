@@ -74,6 +74,12 @@ def entry_emoji(etype: str | None) -> str:
 def entry_label(etype: str | None) -> str:
     return "Receita" if etype == "income" else "Despesa"
 
+def _clip(s: str, n: int = 40) -> str:
+    s = (s or "").strip()
+    if len(s) <= n:
+        return s
+    return s[:n-1] + "…"
+
 # =====================================================================================
 #                              MULTI-TENANT (account_id)
 # =====================================================================================
@@ -148,104 +154,75 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
 #                              REGRAS & DICIONÁRIOS
 # =====================================================================================
 
-# ATENÇÃO À ORDEM: regras mais específicas primeiro.
 CATEGORY_RULES = [
-    # ===================== MÃO DE OBRA (PRIMEIRO) =====================
-    # Ideia: se o texto fala de "paguei X pro <profissional>" ou cita profissional,
-    # cai em Mão de Obra (mesmo que seja encanador/eletricista etc).
+    # ---------------- MÃO DE OBRA (bem completo) ----------------
     (r"\b("
      r"mao\s*de\s*obra|m[aã]o\s*de\s*obra|"
-     r"diari(a|as)|di[aá]ria(s)?|empreit(a|e)da|empreiteir|"
-     r"pedreir(a|o)?|mestre\s*de\s*obras|"
-     r"servente|ajudant(e|a)?|auxiliar|meio\s*oficial|"
-     r"carpinteir(a|o)?|marceneir(a|o)?|"
-     r"armador|ferreir(o|a)?|"
-     r"serralheir(a|o)?|soldador|montador|"
-     r"pintor|"
-     r"eletricist(a|o)?|"
-     r"encanador|bombeiro\s*hidraulico|bombeiro\s*hidráulico|"
-     r"gesseir(o|a)?|"
-     r"azulejist(a|o)?|"
-     r"vidraceir(o|a)?|"
-     r"telhadist(a|o)?|"
-     r"revestidor|aplicador|colocador|assentador|"
-     r"ladrilheiro|"
-     r"operador|"
-     r"tecnic(a|o)|t[eé]cnico|"
-     r"engenheir(a|o)?|arquit(et|e)t(a|o)?|"
-     r"top[oó]graf(o|a)?|"
-     r"encarregad(o|a)?|"
-     r"supervisor|fiscal"
+     r"diari(a|as)|di[aá]ria(s)?|"
+     r"mestre\s+de\s+obras|encarregado|apontador|"
+     r"pedreir(o|a)s?|"
+     r"carpinteir(o|a)s?|"
+     r"armador(es)?|"
+     r"servente(s)?|"
+     r"ajudant(e|es)|auxiliar(es)?|ajudante\s+geral|"
+     r"pintor(es)?|"
+     r"eletricist(a|o)?s?|"
+     r"encanador(es)?|bombeiro\s*hidraulico|bombeiro\s*hidráulico|"
+     r"gesseir(o|a)s?|"
+     r"drywall|montador(es)?|"
+     r"marceneir(o|a)s?|"
+     r"serralheir(o|a)s?|"
+     r"soldador(es)?|"
+     r"vidraceir(o|a)s?|"
+     r"azulejist(a|o)s?|"
+     r"projetista(s)?|"
+     r"topograf(o|a)|top[oó]graf(o|a)|"
+     r"tecnico\s+de\s+seguran(c|ç)a|"
+     r"tecnico\b|t[eé]cnic(o|a)s?|"
+     r"engenheir(o|a)s?|"
+     r"arquit(et|e)t(o|a)s?|"
+     r"operador(es)?\s+de\s+maquina|operador(es)?\s+de\s+m[aá]quina|"
+     r"operador(es)?\s+de\s+betoneira|"
+     r"operador(es)?\s+de\s+compactador|"
+     r"operador(es)?\s+de\s+munck|"
+     r"montagem|instal(a|aç)[aã]o"
      r")\b", "Mão de Obra"),
 
-    # Refrigeração / ar condicionado / tubulação / central
     (r"\b(refriger(a|aç)[aã]o|ar\s*condicionado|split|vrf|central\s+de\s+ar|tubula(c|ç)[aã]o|linha\s+de\s+cobre|cobre\s+para\s+ar|gas\s+refrigerante|flange|vacuometro|manifold)\b", "Refrigeração"),
-
-    # Combustível / abastecimento
     (r"\b(abastec|combust(iv|í)vel|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto)\b", "Combustível"),
-
-    # Logística
     (r"\b(uber|frete|entrega|logistic(a|o)?|carretinha|transport(e|adora)?)\b", "Logística"),
-
-    # Elétrico (materiais/itens elétricos)
-    (r"\b(fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric|eletroduto|conduite)\b", "Elétrico"),
-
-    # Hidráulico (materiais/itens hidráulicos)
+    (r"\b(eletric(a|o)?|fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric)\b", "Elétrico"),
     (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|pvc\b|joelho|te\b|luva\b|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba|sifao|sifão)\b", "Hidráulico"),
-
-    # Drywall/Gesso (materiais/itens)
-    (r"\b(drywall|forro|gesso|placa\s*acartonad|massa\s*drywall|perfil\s*drywall)\b", "Drywall/Gesso"),
-
-    # Pintura (materiais/itens)
-    (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray)\b", "Pintura"),
-
-    # Estrutura/Alvenaria
-    (r"\b(fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento)\b", "Estrutura/Alvenaria"),
-
-    # Esquadrias/Vidro
+    (r"\b(forro|gesso|placa\s*acartonad|perfil\s*drywall|guia|montante)\b", "Drywall/Gesso"),
+    (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray|textura)\b", "Pintura"),
+    (r"\b(estrutura|fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento)\b", "Estrutura/Alvenaria"),
     (r"\b(porta(s)?|janela(s)?|vidro|esquadria|aluminio|fechadur(a|as)|dobradi[cç]a|temperado|kit\s*porta)\b", "Esquadrias/Vidro"),
-
-    # Cobertura
     (r"\b(telha|calha|rufo|cumeeira|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
 
-    # ✅ Acabamento (ampliado)
+    # Acabamento reforçado
     (r"\b("
      r"acabamento|"
-     r"piso|rodape|rodap[eé]|"
-     r"porcelanato|ceramica|cerâmica|azulejo|revestimento|"
+     r"piso|porcelanato|ceramica|cerâmica|"
+     r"rodape|rodapé|"
+     r"revestimento|azulejo|pastilha|"
      r"rejunte|argamassa\s*colante|"
-     r"granito|marmore|mármore|bancada|soleira|peitoril|"
-     r"silicone|massa\s*acrilica|massa\s*acrílica|"
-     r"box|espelho|"
-     r"lou[cç]a(s)?|vaso|bacia|cuba|pia|"
-     r"metais\s*sanitarios|metais\s*sanitários|acabamento\s*de\s*registro|"
-     r"puxador|trinco|"
-     r"verniz|"
-     r"laminado|vinilico|vinílico"
+     r"granito|marmore|mármore|bancada|"
+     r"silicone|vedacao|vedação|"
+     r"massa\s*acrilica|massa\s*acrílica|massa\s*fina|"
+     r"box\b|espelho|"
+     r"lou(c|ç)a(s)?|metais|"
+     r"vaso\s+sanitario|vaso\s+sanitário|"
+     r"cuba\b|pia\b|"
+     r"acabamento\s+de\s+tomada|espelho\s+de\s+tomada"
      r")\b", "Acabamento"),
 
-    # Impermeabilização
     (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
-
-    # Ferragens/Consumíveis
-    (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca|bucha)\b", "Ferragens/Consumíveis"),
-
-    # Ferramentas
-    (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|multímetro|trena)\b", "Ferramentas"),
-
-    # Equipamentos
+    (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
+    (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
     (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|munck|plataforma|guindaste)\b", "Equipamentos"),
-
-    # Marketing
     (r"\b(trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio)\b", "Marketing"),
-
-    # Custos fixos
     (r"\b(aluguel|internet|energia|conta\s*de\s*luz|conta\s*de\s*agua|conta\s*de\s*água|telefone|contabilidade|escritorio|escritório)\b", "Custos Fixos"),
-
-    # Taxas/Financeiro
     (r"\b(taxa|emolumento|cartorio|cartório|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof)\b", "Taxas/Financeiro"),
-
-    # Alimentação
     (r"\b(agua\s+(para\s+beber|de\s+beber)|agua\b|comida(s)?|refeic(a|ã)o|refei[cç][oõ]es|lanche(s)?|marmit(a|as)|quentinha(s)?|almo[cç]o(s)?|jantar(es)?|restaurante(s)?|cafe|café|refrigerante)\b", "Alimentação"),
 ]
 DEFAULT_CATEGORY = "Outros"
@@ -265,12 +242,16 @@ QUERY_INTENT_RE = re.compile(
     r"gastos?|despesas?|"
     r"relat[oó]rio|resumo|"
     r"me\s+mostra|mostra\s+pra\s+mim|me\s+manda|"
-    r"quanto\s+entrou|quanto\s+recebi|quanto\s+ja\s+recebi|"
+    r"lista|detalha|detalhar|itens?|lan[cç]amentos?|extrato|"
+    r"quanto\s+(ja\s+)?recebi|"
+    r"quanto\s+entrou|"
     r"receitas?|entradas?|"
+    r"total\s+recebido|"
     r"saldo(\s+atual)?"
     r")\b",
     re.I
 )
+
 SALDO_INTENT_RE = re.compile(r"\b(saldo(\s+atual)?|balanc(o|co)|balanco)\b", re.I)
 
 # =====================================================================================
@@ -278,10 +259,6 @@ SALDO_INTENT_RE = re.compile(r"\b(saldo(\s+atual)?|balanc(o|co)|balanco)\b", re.
 # =====================================================================================
 
 def money_from_text(txt: str):
-    """
-    - Se tiver 'reais/real/r$' perto, prioriza esse número.
-    - Senão, pega o ÚLTIMO número da frase.
-    """
     s = _norm(txt).replace("r$", "r$ ").strip()
     candidates = list(re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s))
     if not candidates:
@@ -350,7 +327,7 @@ def guess_cc(txt: str) -> str | None:
         tipo = m.group(1)
         nome = m.group(2).strip()
         nome = re.split(
-            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto)\b",
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato)\b",
             nome
         )[0].strip()
         if nome:
@@ -359,10 +336,6 @@ def guess_cc(txt: str) -> str | None:
     return None
 
 def guess_cc_from_reply(txt: str) -> str | None:
-    """
-    Para resposta curta de CC quando o bot está em "pendência".
-    Aqui pode aceitar "A" / "1" / "Rodrigo" etc.
-    """
     t = _norm(txt)
     cc = guess_cc(t)
     if cc:
@@ -380,27 +353,36 @@ def guess_cc_from_reply(txt: str) -> str | None:
 
     return None
 
-def guess_cc_explicit_for_correction(txt: str) -> str | None:
-    """
-    ✅ IMPORTANTE: usado em CORREÇÕES.
-    Só aceita CC se estiver explícito (bloco/setor/sede/obra/reforma/container).
-    Isso evita o bug "OBRA_MUDAACATEGORIA...".
-    """
+def guess_cc_strict_for_correction(txt: str) -> str | None:
     t = _norm(txt)
-    # aceita bloco/setor/sede/obra explícitos
-    cc = guess_cc(t)
-    if cc:
-        return cc
 
-    # aceita "A" ou "1" SOMENTE se a frase mencionar bloco/setor
-    if re.search(r"\b(bloco|setor)\b", t):
-        if re.search(r"\b([a-f])\b", t):
-            m = re.search(r"\b([a-f])\b", t)
-            return f"BLOCO_{m.group(1).upper()}"
-        if re.search(r"\b([1-6])\b", t):
-            m = re.search(r"\b([1-6])\b", t)
-            letter = "ABCDEF"[int(m.group(1)) - 1]
-            return f"BLOCO_{letter}"
+    if re.search(r"\b(sede|administrativo|adm)\b", t):
+        return "SEDE"
+
+    m = re.search(r"\b(bloco|setor)\s+([a-f])\b", t)
+    if m:
+        return f"BLOCO_{m.group(2).upper()}"
+
+    m = re.search(r"\b(bloco|setor)\s+([1-6])\b", t)
+    if m:
+        num = int(m.group(2))
+        letter = "ABCDEF"[num - 1]
+        return f"BLOCO_{letter}"
+
+    m = re.search(r"\b(blo(co)?_[a-f])\b", t)
+    if m:
+        return m.group(1).upper()
+
+    m = re.search(r"\b(?:na|no)?\s*(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
+    if m:
+        tipo = m.group(1)
+        nome = m.group(2).strip()
+        nome = re.split(
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato)\b",
+            nome
+        )[0].strip()
+        if nome:
+            return f"{tipo.upper()}_{_slugify_name(nome)}"
 
     return None
 
@@ -550,7 +532,18 @@ def guess_cc_filter(text: str):
 
 def is_income_query(text: str):
     t = _norm(text or "")
-    return bool(re.search(r"\b(entrou|recebi|receitas?|entradas?|quanto\s+entrou|quanto\s+recebi|quanto\s+ja\s+recebi)\b", t, re.I))
+    return bool(re.search(
+        r"\b("
+        r"entrou|entrada(s)?|"
+        r"recebi|receber|recebido|recebida|"
+        r"receita(s)?|"
+        r"pagaram|pagamento(s)?|"
+        r"quanto\s+(ja\s+)?recebi|"
+        r"quanto\s+entrou|"
+        r"total\s+recebido|"
+        r"pix\s+recebid[oa]"
+        r")\b", t, re.I
+    ))
 
 def is_report_intent(text: str):
     return bool(QUERY_INTENT_RE.search(text or ""))
@@ -562,8 +555,12 @@ def is_summary_request(text: str):
     t = _norm(text or "")
     return bool(re.search(r"\b(resumo|relatorio|relatório)\b", t))
 
+def is_list_request(text: str):
+    t = _norm(text or "")
+    return bool(re.search(r"\b(lista|detalha|detalhar|itens?|lan[cç]amentos?|extrato)\b", t))
+
 # =====================================================================================
-#                               CC STATE (last_cc) + pending + undo cache
+#                               CC STATE + pending + undo cache
 # =====================================================================================
 
 PENDING_BY_USER: dict[int, dict] = {}
@@ -590,11 +587,7 @@ def _set_last_cc(tg_user_id: int, cc_code: str):
     except Exception:
         pass
 
-# --- Persistência do "último lançamento" no banco (não depende de RAM) ---
 def _get_last_entry_id_from_db(tg_user_id: int) -> int | None:
-    """
-    users.last_entry_id é BIGINT (compatível com entries.id).
-    """
     try:
         r = sb.table("users").select("last_entry_id").eq("tg_user_id", tg_user_id).limit(1).execute()
         rows = get_or_none(r) or []
@@ -630,6 +623,7 @@ def is_correction_intent(text: str) -> bool:
         r"editar|edita|"
         r"troca(r)?|"
         r"muda(r)?|"
+        r"mudar\b|"
         r"nao\s+e|não\s+é|"
         r"na\s+verdade|"
         r"o\s+certo\s+e|"
@@ -638,47 +632,26 @@ def is_correction_intent(text: str) -> bool:
         t
     ))
 
-def looks_like_new_entry(text: str) -> bool:
-    """
-    Se parece lançamento novo (tem valor + verbo de lançamento), não tenta corrigir.
-    """
-    t = _norm(text or "")
-    has_money = money_from_text(text) is not None
-    has_launch_verb = bool(re.search(r"\b(paguei|pago|comprei|recebi|entrou|vendi|pix\s+recebid[oa])\b", t))
-    return has_money and has_launch_verb
-
 def extract_correction_targets(text: str) -> dict:
-    """
-    Extrai alvos de correção: categoria, cc, data, tipo, pagamento, VALOR.
-    Regra: se tiver mais de uma categoria na frase, usa a ÚLTIMA.
-    """
     t = _norm(text or "")
 
-    # categoria: pega a ÚLTIMA categoria citada
     found_cats = []
     for pat, cat in CATEGORY_RULES:
         if re.search(pat, t):
             found_cats.append(cat)
     cat = found_cats[-1] if found_cats else None
 
-    # ✅ CC: somente explícito (pra não gerar OBRA_MUDAACATEGORIA...)
-    cc = guess_cc_explicit_for_correction(text)
-
-    # data
+    cc = guess_cc_strict_for_correction(text)
     dtx = parse_date_pt(text)
-
-    # pagamento
     paid_via = guess_payment(text)
 
-    # tipo
     typ = None
     if re.search(r"\b(receita|entrada|entrou|recebi|pix\s+recebid[oa])\b", t):
         typ = "income"
-    if re.search(r"\b(despesa|gasto|sa[ií]da)\b", t):
+    if re.search(r"\b(despesa|gasto|paguei|pago|comprei|sa[ií]da)\b", t):
         typ = "expense" if typ is None else typ
 
-    # ✅ valor
-    amt = money_from_text(text)
+    new_amount = money_from_text(text)
 
     return {
         "category_name": cat,
@@ -686,16 +659,15 @@ def extract_correction_targets(text: str) -> dict:
         "entry_date": dtx,
         "paid_via": paid_via,
         "type": typ,
-        "amount": amt,
+        "amount": new_amount
     }
 
 def _resolve_last_entry_for_user(account_id: str, user_id: int, tg_uid: int) -> dict | None:
-    # 1) DB pointer
     db_id = _get_last_entry_id_from_db(tg_uid)
     if db_id:
         try:
             r = sb.table("entries").select(
-                "id,account_id,created_by,amount,type,entry_date,category_id,cost_center_id,paid_via"
+                "id,account_id,created_by,amount,type,entry_date,category_id,cost_center_id,paid_via,description"
             ).eq("id", db_id).limit(1).execute()
             rows = get_or_none(r) or []
             if rows:
@@ -705,13 +677,12 @@ def _resolve_last_entry_for_user(account_id: str, user_id: int, tg_uid: int) -> 
         except Exception:
             pass
 
-    # 2) RAM cache
     meta = LAST_ENTRY_BY_TG_USER.get(tg_uid) or {}
     if meta.get("id") is not None:
         try:
             eid = int(meta["id"])
             r = sb.table("entries").select(
-                "id,account_id,created_by,amount,type,entry_date,category_id,cost_center_id,paid_via"
+                "id,account_id,created_by,amount,type,entry_date,category_id,cost_center_id,paid_via,description"
             ).eq("id", eid).limit(1).execute()
             rows = get_or_none(r) or []
             if rows:
@@ -721,10 +692,9 @@ def _resolve_last_entry_for_user(account_id: str, user_id: int, tg_uid: int) -> 
         except Exception:
             pass
 
-    # 3) fallback: última do banco
     try:
         r = sb.table("entries").select(
-            "id,account_id,created_by,amount,type,entry_date,category_id,cost_center_id,paid_via"
+            "id,account_id,created_by,amount,type,entry_date,category_id,cost_center_id,paid_via,description"
         ).eq("account_id", account_id).eq("created_by", user_id).order("created_at", desc=True).limit(1).execute()
         rows = get_or_none(r) or []
         return rows[0] if rows else None
@@ -747,7 +717,6 @@ async def try_apply_correction(update: Update, text: str) -> bool:
         return True
 
     targets = extract_correction_targets(text)
-
     if not any([
         targets.get("category_name"),
         targets.get("cc_code"),
@@ -760,32 +729,26 @@ async def try_apply_correction(update: Update, text: str) -> bool:
 
     upd_payload = {}
 
-    # categoria
     if targets.get("category_name"):
         cat_id = ensure_category_id(account_id, targets["category_name"])
         if cat_id:
             upd_payload["category_id"] = cat_id
 
-    # centro de custo
     if targets.get("cc_code"):
         cc_id = ensure_cost_center_id(account_id, targets["cc_code"])
         if cc_id:
             upd_payload["cost_center_id"] = cc_id
             _set_last_cc(tg_uid, targets["cc_code"])
 
-    # data
     if targets.get("entry_date"):
         upd_payload["entry_date"] = targets["entry_date"]
 
-    # pagamento
     if targets.get("paid_via"):
         upd_payload["paid_via"] = targets["paid_via"]
 
-    # tipo
     if targets.get("type") in ("income", "expense"):
         upd_payload["type"] = targets["type"]
 
-    # ✅ valor
     if targets.get("amount") is not None:
         upd_payload["amount"] = float(targets["amount"])
 
@@ -795,7 +758,7 @@ async def try_apply_correction(update: Update, text: str) -> bool:
     try:
         sb.table("entries").update(upd_payload).eq("id", last_row["id"]).execute()
     except Exception as e:
-        await update.message.reply_text(f"💥 Não consegui corrigir agora: {type(e)._name_}: {e}")
+        await update.message.reply_text(f"💥 Não consegui corrigir agora: {type(e).__name__}: {e}")
         return True
 
     changed = []
@@ -833,7 +796,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         if amount is None:
             return False, "Não achei o valor. Ex.: 'paguei 200 no eletricista'."
 
-        # INCOME
         if re.search(r"\b(receb(i|ido|ida|imento)|receita|entrada|entrou|vendi|pagaram|pagou\s+pra\s+mim|pix\s+recebid[oa])\b", low):
             etype = "income"
         else:
@@ -891,7 +853,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         if cc_code:
             _set_last_cc(tg_user_id, cc_code)
 
-        # cache RAM
         if created_row and isinstance(created_row, dict) and created_row.get("id") is not None:
             LAST_ENTRY_BY_TG_USER[tg_user_id] = {
                 "id": created_row["id"],
@@ -915,7 +876,6 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
                 "category": cat_name,
             }
 
-        # persistir ponteiro no DB
         if created_row and isinstance(created_row, dict) and created_row.get("id") is not None:
             try:
                 _set_last_entry_id_to_db(tg_user_id, int(created_row["id"]))
@@ -933,7 +893,7 @@ def save_entry(tg_user_id: int, txt: str, force_cc: str | None = None):
         }
 
     except Exception as e:
-        return False, f"Erro interno no save_entry: {type(e)._name_}: {e}"
+        return False, f"Erro interno no save_entry: {type(e).__name__}: {e}"
 
 # =====================================================================================
 #                               CONSULTAS / RELATÓRIOS
@@ -993,7 +953,7 @@ async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
 
     except Exception as e:
-        await update.message.reply_text(f"💥 Erro no /resumo: {type(e)._name_}: {e}")
+        await update.message.reply_text(f"💥 Erro no /resumo: {type(e).__name__}: {e}")
 
 async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1057,12 +1017,7 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         icon = entry_emoji(typ)
 
         msg = f"{icon} Desfeito: "
-        if typ == "income":
-            msg += "última receita"
-        elif typ == "expense":
-            msg += "última despesa"
-        else:
-            msg += "último lançamento"
+        msg += "última receita" if typ == "income" else "última despesa" if typ == "expense" else "último lançamento"
 
         extras = []
         amt = meta.get("amount")
@@ -1082,7 +1037,7 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
 
     except Exception as e:
-        await update.message.reply_text(f"💥 Erro no /desfazer: {type(e)._name_}: {e}")
+        await update.message.reply_text(f"💥 Erro no /desfazer: {type(e).__name__}: {e}")
 
 async def run_query_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -1130,6 +1085,66 @@ async def run_query_and_reply(update: Update, text: str):
     await update.message.reply_text(
         f"📊 Total de {'receitas' if is_income else 'despesas'} em {label}{filtros_txt}:\n{moeda_fmt(total)}"
     )
+
+async def run_list_entries_and_reply(update: Update, text: str):
+    user_row = _get_user_row(update.effective_user.id)
+    if not user_row or not user_row.get("is_active"):
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+    account_id = user_row.get("account_id") or get_default_account_id()
+
+    start, end, label = parse_period_pt(text)
+    is_income = is_income_query(text)
+    cc_code = guess_cc_filter(text)
+    cat = guess_category_filter(text)
+
+    q = sb.table("entries").select("amount,type,entry_date,description,category_id,cost_center_id") \
+        .eq("account_id", account_id) \
+        .gte("entry_date", start).lt("entry_date", end) \
+        .eq("type", "income" if is_income else "expense") \
+        .order("entry_date", desc=True) \
+        .limit(30)
+
+    if cc_code:
+        cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
+        ccd = get_or_none(cc) or []
+        if ccd:
+            q = q.eq("cost_center_id", ccd[0]["id"])
+
+    if cat:
+        c = sb.table("categories").select("id").eq("account_id", account_id).eq("name", cat).limit(1).execute()
+        cd = get_or_none(c) or []
+        if cd:
+            q = q.eq("category_id", cd[0]["id"])
+
+    rows = get_or_none(q.execute()) or []
+
+    if not rows:
+        await update.message.reply_text(f"📄 Sem lançamentos em {label}" + (f" para {cc_code}" if cc_code else "") + ".")
+        return
+
+    cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
+    ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
+    cats = {r["id"]: r["name"] for r in cats_rows}
+    ccs  = {r["id"]: r["code"] for r in ccs_rows}
+
+    total = sum(float(r["amount"]) for r in rows)
+    header = f"📄 Lista de {'receitas' if is_income else 'despesas'} — {label}"
+    if cc_code:
+        header += f" | {cc_code}"
+    if cat:
+        header += f" | {cat}"
+
+    lines = []
+    for r in rows:
+        dt = data_fmt_out(r.get("entry_date"))
+        cat_name = cats.get(r.get("category_id"), "Sem categoria")
+        cc_name = ccs.get(r.get("cost_center_id"), "Sem CC")
+        desc = _clip(r.get("description") or "", 45)
+        lines.append(f"• {dt} — {moeda_fmt(float(r['amount']))} — {cat_name} — {cc_name}\n  {_clip(desc, 60)}")
+
+    msg = header + "\n" + "——————————————\n" + f"Total (até 30 itens): {moeda_fmt(total)}\n\n" + "\n".join(lines)
+    await update.message.reply_text(msg)
 
 async def run_balance_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -1236,41 +1251,88 @@ async def run_cc_full_summary(update: Update, text: str):
     )
     await update.message.reply_text(msg)
 
-# =====================================================================================
-#                               COMANDO: /categorias
-# =====================================================================================
+async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None = None):
+    """
+    Extrato (mini-DRE) da obra:
+    - receitas, despesas, saldo
+    - top despesas e top receitas por categoria
+    - lista dos últimos 10 lançamentos (independente do tipo)
+    """
+    user_row = _get_user_row(update.effective_user.id)
+    if not user_row or not user_row.get("is_active"):
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+    account_id = user_row.get("account_id") or get_default_account_id()
 
-async def cmd_categorias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_row = _get_user_row(update.effective_user.id)
-        if not user_row or not user_row.get("is_active"):
-            await update.message.reply_text("Usuário não autorizado.")
-            return
+    start, end, label = parse_period_pt(period_text or "este mês")
 
-        account_id = user_row.get("account_id") or get_default_account_id()
+    cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
+    ccd = get_or_none(cc) or []
+    if not ccd:
+        await update.message.reply_text(f"Não achei esse centro de custo: {cc_code}")
+        return
+    cc_id = ccd[0]["id"]
 
-        rows = get_or_none(
-            sb.table("categories").select("name").eq("account_id", account_id).execute()
-        ) or []
+    rows = get_or_none(
+        sb.table("entries")
+        .select("amount,type,category_id,entry_date,description")
+        .eq("account_id", account_id)
+        .eq("cost_center_id", cc_id)
+        .gte("entry_date", start).lt("entry_date", end)
+        .order("entry_date", desc=True)
+        .limit(2000)
+        .execute()
+    ) or []
 
-        db_cats = sorted({r.get("name") for r in rows if r.get("name")})
+    if not rows:
+        await update.message.reply_text(f"📄 Sem lançamentos em {label} para {cc_code}.")
+        return
 
-        # também mostra as categorias "do motor" (as do CATEGORY_RULES)
-        engine_cats = sorted({cat for _, cat in CATEGORY_RULES} | {DEFAULT_CATEGORY})
+    cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
+    cats = {r["id"]: r["name"] for r in cats_rows}
 
-        msg = "📚 Categorias (Account):\n"
-        if db_cats:
-            msg += "\n".join([f"• {c}" for c in db_cats])
+    total_in = 0.0
+    total_out = 0.0
+    by_cat_exp = defaultdict(float)
+    by_cat_inc = defaultdict(float)
+
+    for r in rows:
+        v = float(r["amount"])
+        cat_name = cats.get(r.get("category_id"), "Sem categoria")
+        if r.get("type") == "income":
+            total_in += v
+            by_cat_inc[cat_name] += v
         else:
-            msg += "• (nenhuma ainda no banco — vão sendo criadas conforme você lança)\n"
+            total_out += v
+            by_cat_exp[cat_name] += v
 
-        msg += "\n\n⚙️ Categorias reconhecidas pelo Boris:\n"
-        msg += "\n".join([f"• {c}" for c in engine_cats])
+    saldo = total_in - total_out
 
-        await update.message.reply_text(msg)
+    def top_fmt(d, limit=5):
+        items = sorted(d.items(), key=lambda x: x[1], reverse=True)[:limit]
+        return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
 
-    except Exception as e:
-        await update.message.reply_text(f"💥 Erro no /categorias: {type(e)._name_}: {e}")
+    last10 = rows[:10]
+    last_lines = []
+    for r in last10:
+        icon = entry_emoji(r.get("type"))
+        dt = data_fmt_out(r.get("entry_date"))
+        cat_name = cats.get(r.get("category_id"), "Sem categoria")
+        desc = _clip(r.get("description") or "", 42)
+        last_lines.append(f"• {dt} {icon} {moeda_fmt(float(r['amount']))} — {cat_name}\n  {_clip(desc, 60)}")
+
+    msg = (
+        f"📒 Extrato — {cc_code}\n"
+        f"Período: {label}\n"
+        f"——————————————\n"
+        f"Receitas: {moeda_fmt(total_in)}\n"
+        f"Despesas: {moeda_fmt(total_out)}\n"
+        f"Saldo: {moeda_fmt(saldo)}\n\n"
+        f"Top despesas (categorias):\n{top_fmt(by_cat_exp)}\n\n"
+        f"Top receitas (categorias):\n{top_fmt(by_cat_inc)}\n\n"
+        f"Últimos lançamentos:\n" + "\n".join(last_lines)
+    )
+    await update.message.reply_text(msg)
 
 # =====================================================================================
 #                               PROCESSAMENTO ÚNICO (texto e áudio)
@@ -1283,7 +1345,6 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if not user_text:
             return
 
-        # pendência esperando CC
         if uid in PENDING_BY_USER:
             cc = guess_cc_from_reply(user_text)
             if cc:
@@ -1310,17 +1371,15 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo.")
                 return
 
-        # ✅ CORREÇÕES (edição do último lançamento)
-        if is_correction_intent(user_text) and not looks_like_new_entry(user_text):
+        # Correções primeiro
+        if is_correction_intent(user_text):
             applied = await try_apply_correction(update, user_text)
             if applied:
                 return
 
-        # seta CC sem valor
-        cc_only = guess_cc(user_text)
-        if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text) and not is_saldo_intent(user_text):
-            _set_last_cc(uid, cc_only)
-            await update.message.reply_text(f"✅ Centro de custo atual definido: {cc_only}")
+        # Lista detalhada tem prioridade sobre setar CC
+        if is_list_request(user_text) and (is_report_intent(user_text) or guess_cc_filter(user_text) or is_income_query(user_text)):
+            await run_list_entries_and_reply(update, user_text)
             return
 
         # saldo
@@ -1333,9 +1392,16 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await run_cc_full_summary(update, user_text)
             return
 
-        # relatório/consulta
+        # relatório/consulta (total)
         if is_report_intent(user_text):
             await run_query_and_reply(update, user_text)
+            return
+
+        # seta CC sem valor (e SEM intenção de consulta)
+        cc_only = guess_cc(user_text)
+        if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text) and not is_saldo_intent(user_text):
+            _set_last_cc(uid, cc_only)
+            await update.message.reply_text(f"✅ Centro de custo atual definido:\n{cc_only}")
             return
 
         # se não tem CC nem last_cc e tem valor -> pede CC
@@ -1377,22 +1443,17 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "Exemplos:\n"
                 "• paguei 200 no eletricista (pix) bloco A\n"
                 "• pix recebido 1554,21 obra do Rodrigo\n"
-                "• recebi 1200 do cliente pix sede\n"
-                "• recebi 1554,21 em 13/12 obra do Rodrigo\n"
-                "• /desfazer (desfaz o último lançamento)\n"
-                "• /resumo (resumo semanal)\n"
-                "• /categorias\n"
-                "• quanto entrou nesse mês?\n"
                 "• saldo da obra do Rodrigo\n"
                 "• resumo da obra do Rodrigo\n"
-                "• saldo nos últimos 15 dias\n"
-                "• corrige: categoria é mão de obra\n"
-                "• corrige: é 200 reais\n"
-                "• não é hidráulico, é mão de obra\n"
+                "• me dá uma lista de tudo que eu gastei na obra do João\n"
+                "• quanto já recebi na obra do João?\n"
+                "• /extrato_obra João\n"
+                "• corrige, era 150, é 200\n"
+                "• mudar a categoria para estrutura\n"
             )
 
     except Exception as e:
-        await update.message.reply_text(f"💥 Erro no processamento: {type(e)._name_}: {e}")
+        await update.message.reply_text(f"💥 Erro no processamento: {type(e).__name__}: {e}")
 
 # =====================================================================================
 #                               TELEGRAM HANDLERS
@@ -1531,11 +1592,71 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
 
     except Exception as e:
-        await update.message.reply_text(f"💥 Erro no /relatorio: {type(e)._name_}: {e}")
+        await update.message.reply_text(f"💥 Erro no /relatorio: {type(e).__name__}: {e}")
 
+async def cmd_categorias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_row = _get_user_row(update.effective_user.id)
+        if not user_row or not user_row.get("is_active"):
+            await update.message.reply_text("Usuário não autorizado.")
+            return
+        account_id = user_row.get("account_id") or get_default_account_id()
+
+        cats_rows = get_or_none(
+            sb.table("categories").select("name").eq("account_id", account_id).order("name", desc=False).execute()
+        ) or []
+
+        if not cats_rows:
+            await update.message.reply_text("📁 Ainda não tem categorias cadastradas.")
+            return
+
+        names = [r["name"] for r in cats_rows if r.get("name")]
+        msg = "📁 Categorias:\n" + "\n".join([f"• {n}" for n in names])
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text(f"💥 Erro no /categorias: {type(e).__name__}: {e}")
+
+async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /extrato_obra João
+    /extrato_obra João este mês
+    /extrato_obra Rodrigo semana passada
+    """
+    raw = " ".join(context.args).strip()
+    if not raw:
+        await update.message.reply_text("Uso: /extrato_obra <nome> [período]. Ex: /extrato_obra João este mês")
+        return
+
+    # tenta separar nome vs período por palavras-chave simples
+    # se tiver "este mês/semana passada/últimos X dias", assume tudo depois vira período
+    low = _norm(raw)
+    period_markers = ["este mes", "essa semana", "semana passada", "mes passado", "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena"]
+    split_idx = None
+    for mk in period_markers:
+        pos = low.find(mk)
+        if pos != -1:
+            split_idx = pos
+            break
+
+    if split_idx is None:
+        name = raw
+        period_txt = "este mês"
+    else:
+        name = raw[:split_idx].strip()
+        period_txt = raw[split_idx:].strip() or "este mês"
+
+    if not name:
+        await update.message.reply_text("Me diz o nome da obra. Ex: /extrato_obra João este mês")
+        return
+
+    cc = f"OBRA_{_slugify_name(name)}"
+    await run_cc_extrato(update, cc, period_txt)
+
+# -------------------- TEXTO --------------------
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_user_text(update, context, update.message.text or "")
 
+# -------------------- ÁUDIO (voice/audio) --------------------
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not oa_client:
         await update.message.reply_text("Whisper não está configurado (OPENAI_API_KEY ausente).")
@@ -1598,7 +1719,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_user_text(update, context, text_out)
 
     except Exception as e:
-        msg = f"💥 Erro no handle_audio: {type(e)._name_}: {e}"
+        msg = f"💥 Erro no handle_audio: {type(e).__name__}: {e}"
         if "timed out" in str(e).lower() or "timeout" in str(e).lower():
             msg += "\n\nDica: manda de novo um áudio mais curto (até ~10s) ou manda em texto."
         await update.message.reply_text(msg)
@@ -1619,6 +1740,7 @@ tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
 tg_app.add_handler(CommandHandler("resumo", cmd_resumo))
 tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer))
 tg_app.add_handler(CommandHandler("categorias", cmd_categorias))
+tg_app.add_handler(CommandHandler("extrato_obra", cmd_extrato_obra))
 
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
