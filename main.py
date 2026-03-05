@@ -3,6 +3,7 @@ import re
 import uuid
 import unicodedata
 import datetime
+import asyncio
 from datetime import date, timedelta
 from collections import defaultdict
 
@@ -41,6 +42,39 @@ sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # -------------- FASTAPI --------------
 app = FastAPI()
+
+# =====================================================================================
+#                          KEEPALIVE (Supabase Free) + Render
+# =====================================================================================
+
+_KEEPALIVE_TASK = None
+
+async def _supabase_keepalive_once():
+    """
+    Ping leve pra manter o projeto Supabase acordado.
+    Não depende de endpoint externo; consulta simples no banco.
+    """
+    try:
+        # consulta mínima
+        sb.table("accounts").select("id").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+async def _daily_keepalive_loop():
+    """
+    Loop simples: roda 1x por dia.
+    Obs: Se teu serviço tiver múltiplos workers/replicas, pode rodar mais de 1x/dia. É ok pro objetivo.
+    """
+    # pequeno atraso inicial pra não bater junto no deploy
+    await asyncio.sleep(10)
+    while True:
+        try:
+            await _supabase_keepalive_once()
+        except Exception:
+            pass
+        # 24h
+        await asyncio.sleep(24 * 60 * 60)
 
 # =====================================================================================
 #                              NORMALIZAÇÃO / HELPERS
@@ -155,7 +189,7 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
 # =====================================================================================
 
 CATEGORY_RULES = [
-    # ---------------- MÃO DE OBRA (bem completo) ----------------
+    # ---------------- MÃO DE OBRA ----------------
     (r"\b("
      r"mao\s*de\s*obra|m[aã]o\s*de\s*obra|"
      r"diari(a|as)|di[aá]ria(s)?|"
@@ -171,8 +205,8 @@ CATEGORY_RULES = [
      r"gesseir(o|a)s?|"
      r"drywall|montador(es)?|"
      r"marceneir(o|a)s?|"
-     r"serralheir(o|a)s?|"
-     r"soldador(es)?|"
+     r"serralheir(o|a)s?|serralheiro(s)?|"
+     r"soldador(es)?|soldador(a)?s?|"
      r"vidraceir(o|a)s?|"
      r"azulejist(a|o)s?|"
      r"projetista(s)?|"
@@ -188,23 +222,71 @@ CATEGORY_RULES = [
      r"montagem|instal(a|aç)[aã]o"
      r")\b", "Mão de Obra"),
 
+    # ---------------- LAZER (novo) ----------------
+    (r"\b("
+     r"lazer|"
+     r"bar|cerveja|churrasco|restaurante|pizza|cinema|show|balada|happy\s*hour|"
+     r"bebida(s)?|"
+     r"drink(s)?"
+     r")\b", "Lazer"),
+
+    # ---------------- LOGÍSTICA / TRANSPORTE (reforçado) ----------------
+    # (inclui "munk/munck" e custos de transporte e veículos)
+    (r"\b("
+     r"uber|frete|entrega|logistic(a|o)?|transport(e|adora)?|"
+     r"carretinha|carrocinha|reboque|"
+     r"munk|munck|"
+     r"pedagio|pedagios|ped[aá]gio|ped[aá]gios|"
+     r"balsa|travessia\s+de\s+balsa|"
+     r"pneu|pneus|"
+     r"borracheiro|borracharia|calibragem|"
+     r"manutencao|manuten[cç][aã]o|"
+     r"peca|pecas|pe[cç]a|pe[cç]as|"
+     r"oficina|"
+     r"lavagem|lava\s*jato|lava\s+a\s*jato|lava-jato|"
+     r"etios|"
+     r"tcross|t-cross|t\s*cross"
+     r")\b", "Logística"),
+
     (r"\b(refriger(a|aç)[aã]o|ar\s*condicionado|split|vrf|central\s+de\s+ar|tubula(c|ç)[aã]o|linha\s+de\s+cobre|cobre\s+para\s+ar|gas\s+refrigerante|flange|vacuometro|manifold)\b", "Refrigeração"),
     (r"\b(abastec|combust(iv|í)vel|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto)\b", "Combustível"),
-    (r"\b(uber|frete|entrega|logistic(a|o)?|carretinha|transport(e|adora)?)\b", "Logística"),
     (r"\b(eletric(a|o)?|fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric)\b", "Elétrico"),
     (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|pvc\b|joelho|te\b|luva\b|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba|sifao|sifão)\b", "Hidráulico"),
-    (r"\b(forro|gesso|placa\s*acartonad|perfil\s*drywall|guia|montante)\b", "Drywall/Gesso"),
-    (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray|textura)\b", "Pintura"),
-    (r"\b(estrutura|fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento)\b", "Estrutura/Alvenaria"),
-    (r"\b(porta(s)?|janela(s)?|vidro|esquadria|aluminio|fechadur(a|as)|dobradi[cç]a|temperado|kit\s*porta)\b", "Esquadrias/Vidro"),
+
+    # ---------------- REVESTIMENTOS (novo) ----------------
+    (r"\b("
+     r"revestimento(s)?|"
+     r"forro(\s*pvc)?|"
+     r"dry\s*wall|drywall|"
+     r"gesso(\s+acartonado)?"
+     r")\b", "Revestimentos"),
+
+    (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray|textura|zarcao|zarc[aã]o)\b", "Pintura"),
+
+    # Estrutura: adiciona perfil/perfis/metalon/metalons
+    (r"\b(estrutura|fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento|perfil|perfis|metalon|metalons)\b", "Estrutura/Alvenaria"),
+
+    # Esquadrias: adiciona fechadura/dobradiça/trinco/cadeado/vidro/janela...
+    (r"\b("
+     r"porta(s)?|"
+     r"janela(s)?|janela\s+de\s+vidro|"
+     r"vidro|"
+     r"esquadria|"
+     r"aluminio|alum[ií]nio|"
+     r"fechadur(a|as)|fechadura(s)?|"
+     r"dobradi[cç]a(s)?|"
+     r"trinco|cadeado|"
+     r"temperado|kit\s*porta"
+     r")\b", "Esquadrias/Vidro"),
+
     (r"\b(telha|calha|rufo|cumeeira|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
 
-    # Acabamento reforçado
+    # Acabamento
     (r"\b("
      r"acabamento|"
      r"piso|porcelanato|ceramica|cerâmica|"
      r"rodape|rodapé|"
-     r"revestimento|azulejo|pastilha|"
+     r"azulejo|pastilha|"
      r"rejunte|argamassa\s*colante|"
      r"granito|marmore|mármore|bancada|"
      r"silicone|vedacao|vedação|"
@@ -219,7 +301,10 @@ CATEGORY_RULES = [
     (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
     (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
     (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
-    (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|munck|plataforma|guindaste)\b", "Equipamentos"),
+
+    # Equipamentos: tira prioridade de munck/munck (já pega na logística)
+    (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|plataforma|guindaste)\b", "Equipamentos"),
+
     (r"\b(trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio)\b", "Marketing"),
     (r"\b(aluguel|internet|energia|conta\s*de\s*luz|conta\s*de\s*agua|conta\s*de\s*água|telefone|contabilidade|escritorio|escritório)\b", "Custos Fixos"),
     (r"\b(taxa|emolumento|cartorio|cartório|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof)\b", "Taxas/Financeiro"),
@@ -253,6 +338,17 @@ QUERY_INTENT_RE = re.compile(
 )
 
 SALDO_INTENT_RE = re.compile(r"\b(saldo(\s+atual)?|balanc(o|co)|balanco)\b", re.I)
+
+COMPANY_BALANCE_RE = re.compile(
+    r"\b("
+    r"saldo\s+da\s+empresa|"
+    r"saldo\s+geral|"
+    r"geral\s+da\s+empresa|"
+    r"empresa\s+no\s+geral|"
+    r"saldo\s+total"
+    r")\b",
+    re.I
+)
 
 # =====================================================================================
 #                               PARSE DE TEXTO
@@ -308,6 +404,7 @@ def guess_cc(txt: str) -> str | None:
     if re.search(r"\b(sede|administrativo|adm)\b", t):
         return "SEDE"
 
+    # Blocos (A-F ou 1-6)
     m = re.search(r"\b(bloco|setor)\s+([a-f])\b", t)
     if m:
         return f"BLOCO_{m.group(2).upper()}"
@@ -322,7 +419,20 @@ def guess_cc(txt: str) -> str | None:
     if m:
         return m.group(1).upper()
 
-    m = re.search(r"\b(?:na|no)?\s*(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
+    # ---------------- CONTAINER (prioridade) ----------------
+    # Exemplos: "container do Thiago", "do container da Ellen", "container Thiago"
+    m = re.search(r"\b(?:do|da|de|no|na)?\s*container\s+(?:do|da|de)?\s*([a-z0-9][a-z0-9\s\-_.]+)\b", t)
+    if m:
+        nome = m.group(1).strip()
+        nome = re.split(
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato)\b",
+            nome
+        )[0].strip()
+        if nome:
+            return f"CONTAINER_{_slugify_name(nome)}"
+
+    # ---------------- OBRA/REFORMA (depois) ----------------
+    m = re.search(r"\b(?:na|no)?\s*(obra|reforma)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
     if m:
         tipo = m.group(1)
         nome = m.group(2).strip()
@@ -341,6 +451,7 @@ def guess_cc_from_reply(txt: str) -> str | None:
     if cc:
         return cc
 
+    # Respostas rápidas: "A" / "1" / "Thiago" etc.
     if re.fullmatch(r"[a-f]", t):
         return f"BLOCO_{t.upper()}"
 
@@ -348,43 +459,21 @@ def guess_cc_from_reply(txt: str) -> str | None:
         letter = "ABCDEF"[int(t) - 1]
         return f"BLOCO_{letter}"
 
+    # Permite "container thiago" direto como resposta
+    m = re.fullmatch(r"container\s+(.+)", t)
+    if m:
+        nome = m.group(1).strip()
+        if nome:
+            return f"CONTAINER_{_slugify_name(nome)}"
+
     if len(t) <= 40 and re.fullmatch(r"[a-z0-9][a-z0-9\s._-]*", t):
         return f"OBRA_{_slugify_name(t)}"
 
     return None
 
 def guess_cc_strict_for_correction(txt: str) -> str | None:
-    t = _norm(txt)
-
-    if re.search(r"\b(sede|administrativo|adm)\b", t):
-        return "SEDE"
-
-    m = re.search(r"\b(bloco|setor)\s+([a-f])\b", t)
-    if m:
-        return f"BLOCO_{m.group(2).upper()}"
-
-    m = re.search(r"\b(bloco|setor)\s+([1-6])\b", t)
-    if m:
-        num = int(m.group(2))
-        letter = "ABCDEF"[num - 1]
-        return f"BLOCO_{letter}"
-
-    m = re.search(r"\b(blo(co)?_[a-f])\b", t)
-    if m:
-        return m.group(1).upper()
-
-    m = re.search(r"\b(?:na|no)?\s*(obra|reforma|container)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
-    if m:
-        tipo = m.group(1)
-        nome = m.group(2).strip()
-        nome = re.split(
-            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato)\b",
-            nome
-        )[0].strip()
-        if nome:
-            return f"{tipo.upper()}_{_slugify_name(nome)}"
-
-    return None
+    # para correção, usa a mesma lógica (priorizando CONTAINER)
+    return guess_cc(txt)
 
 def parse_date_pt(txt: str) -> str | None:
     t = _norm(txt)
@@ -529,6 +618,9 @@ def guess_paid_filter(text: str):
 
 def guess_cc_filter(text: str):
     return guess_cc(text)
+
+def is_company_balance_request(text: str) -> bool:
+    return bool(COMPANY_BALANCE_RE.search(text or ""))
 
 def is_income_query(text: str):
     t = _norm(text or "")
@@ -1154,7 +1246,9 @@ async def run_balance_and_reply(update: Update, text: str):
     account_id = user_row.get("account_id") or get_default_account_id()
 
     start, end, label = parse_period_pt(text)
-    cc_code = guess_cc_filter(text)
+
+    # Opção B: saldo da empresa quando pedir "saldo da empresa/geral"
+    cc_code = None if is_company_balance_request(text) else guess_cc_filter(text)
 
     base = sb.table("entries").select("amount,type,cost_center_id,entry_date") \
         .eq("account_id", account_id) \
@@ -1171,7 +1265,11 @@ async def run_balance_and_reply(update: Update, text: str):
     despesas = sum(float(r["amount"]) for r in rows if r.get("type") == "expense")
     saldo = receitas - despesas
 
-    filtro_txt = f" | {cc_code}" if cc_code else ""
+    if is_company_balance_request(text):
+        filtro_txt = " | Empresa (geral)"
+    else:
+        filtro_txt = f" | {cc_code}" if cc_code else ""
+
     msg = (
         f"💰 Saldo em {label}{filtro_txt}\n"
         f"Receitas: {moeda_fmt(receitas)}\n"
@@ -1192,7 +1290,7 @@ async def run_cc_full_summary(update: Update, text: str):
     cc_code = guess_cc_filter(text)
 
     if not cc_code:
-        await update.message.reply_text("Me diz qual obra/centro de custo. Ex: 'resumo da obra do Rodrigo'.")
+        await update.message.reply_text("Me diz qual centro de custo. Ex: 'resumo da obra do Rodrigo' ou 'resumo do container do Thiago'.")
         return
 
     cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
@@ -1253,7 +1351,7 @@ async def run_cc_full_summary(update: Update, text: str):
 
 async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None = None):
     """
-    Extrato (mini-DRE) da obra:
+    Extrato (mini-DRE) do CC:
     - receitas, despesas, saldo
     - top despesas e top receitas por categoria
     - lista dos últimos 10 lançamentos (independente do tipo)
@@ -1368,7 +1466,7 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     await update.message.reply_text(f"⚠️ {res}")
                 return
             else:
-                await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo.")
+                await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo, container do Thiago.")
                 return
 
         # Correções primeiro
@@ -1387,7 +1485,7 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await run_balance_and_reply(update, user_text)
             return
 
-        # resumo por obra
+        # resumo por CC (obra/container/bloco/sede)
         if is_summary_request(user_text) and guess_cc_filter(user_text):
             await run_cc_full_summary(update, user_text)
             return
@@ -1412,8 +1510,8 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             PENDING_BY_USER[uid] = {"txt": user_text}
             await update.message.reply_text(
                 "Beleza. Só me diz qual centro de custo pra eu lançar certinho.\n"
-                "Ex: Bloco A, Sede/Administrativo, obra do Rodrigo.\n\n"
-                "Dica: define o CC do dia com /obra Rodrigo (ou 'bloco A')."
+                "Ex: Bloco A, Sede/Administrativo, obra do Rodrigo, container do Thiago.\n\n"
+                "Dica: define o CC do dia com /obra Rodrigo (ou 'bloco A', ou 'container Thiago')."
             )
             return
 
@@ -1432,7 +1530,7 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
             hint = ""
             if r.get("used_last_cc") and r.get("cc"):
-                hint = "\nSe não for esse CC, manda: Bloco A / Sede / obra do <nome> (que eu ajusto pro próximo)."
+                hint = "\nSe não for esse CC, manda: Bloco A / Sede / obra do <nome> / container do <nome> (que eu ajusto pro próximo)."
 
             await update.message.reply_text(
                 f"{icon} {label}: {moeda_fmt(r['amount'])} • {r['category']} • {r['cc'] or 'Sem CC'}{tail}{hint}"
@@ -1443,13 +1541,17 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "Exemplos:\n"
                 "• paguei 200 no eletricista (pix) bloco A\n"
                 "• pix recebido 1554,21 obra do Rodrigo\n"
+                "• recebi 1000 do container do Thiago\n"
+                "• paguei 1000 pra transportar o container da Ellen de munk\n"
                 "• saldo da obra do Rodrigo\n"
-                "• resumo da obra do Rodrigo\n"
+                "• saldo da empresa este mês\n"
+                "• resumo do container do Thiago\n"
                 "• me dá uma lista de tudo que eu gastei na obra do João\n"
                 "• quanto já recebi na obra do João?\n"
                 "• /extrato_obra João\n"
                 "• corrige, era 150, é 200\n"
                 "• mudar a categoria para estrutura\n"
+                "• /ajuda\n"
             )
 
     except Exception as e:
@@ -1490,7 +1592,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Fala, {u.first_name}! Eu sou o Boris.\n"
         f"Teu Telegram user id é: {u.id}\n"
-        f"Pede pro owner te autorizar com /autorizar {u.id}"
+        f"Pede pro owner te autorizar com /autorizar {u.id}\n"
+        f"Comandos: /ajuda"
     )
 
 async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1627,8 +1730,6 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /extrato_obra <nome> [período]. Ex: /extrato_obra João este mês")
         return
 
-    # tenta separar nome vs período por palavras-chave simples
-    # se tiver "este mês/semana passada/últimos X dias", assume tudo depois vira período
     low = _norm(raw)
     period_markers = ["este mes", "essa semana", "semana passada", "mes passado", "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena"]
     split_idx = None
@@ -1651,6 +1752,42 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cc = f"OBRA_{_slugify_name(name)}"
     await run_cc_extrato(update, cc, period_txt)
+
+async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "📌 **BORIS — Ajuda rápida**\n"
+        "——————————————\n"
+        "✅ **Lançar despesas/receitas (texto ou áudio)**\n"
+        "• \"paguei 150 de cabo elétrico na obra do Rodrigo\"\n"
+        "• \"recebi 1000 do container do Thiago\"\n"
+        "• \"paguei 1000 pra transportar o container da Ellen de munk\"\n\n"
+        "✅ **Centro de custo (CC) entendido pelo texto**\n"
+        "• Obra: \"obra do Rodrigo\" → `OBRA_RODRIGO`\n"
+        "• Container: \"container do Thiago\" → `CONTAINER_THIAGO`\n"
+        "• Bloco/Setor: \"bloco A\" → `BLOCO_A`\n"
+        "• Sede: \"sede\"/\"adm\" → `SEDE`\n\n"
+        "✅ **Comandos**\n"
+        "• /start — cadastra/mostra teu id\n"
+        "• /autorizar <id> — (owner) autoriza usuário\n"
+        "• /obra <nome> — define CC do dia (OBRA)\n"
+        "• /despesa <texto> — força tratar como despesa\n"
+        "• /receita <texto> — força tratar como receita\n"
+        "• /saldo [período] — saldo do período\n"
+        "   - exemplo: /saldo este mês\n"
+        "   - exemplo: \"saldo da empresa este mês\" (saldo geral)\n"
+        "• /relatorio — resumo do mês (despesas)\n"
+        "• /resumo — resumo da semana (despesas)\n"
+        "• /desfazer — apaga o último lançamento\n"
+        "• /categorias — lista categorias cadastradas\n"
+        "• /extrato_obra <nome> [período] — extrato/mini-DRE da obra\n\n"
+        "✅ **Consultas em texto**\n"
+        "• \"quanto gastei esse mês?\"\n"
+        "• \"quanto gastei em elétrica na obra do Rodrigo esse mês?\"\n"
+        "• \"saldo da empresa últimos 15 dias\"\n"
+        "• \"me dá uma lista do que eu gastei na obra do João esse mês\"\n\n"
+        "ℹ️ Dica: se você mandar um lançamento sem CC e não tiver CC anterior, o Boris vai perguntar qual CC."
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 # -------------------- TEXTO --------------------
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1732,6 +1869,7 @@ tg_app: Application = ApplicationBuilder().token(TOKEN).build()
 
 tg_app.add_handler(CommandHandler("start", cmd_start))
 tg_app.add_handler(CommandHandler("autorizar", cmd_autorizar))
+tg_app.add_handler(CommandHandler("ajuda", cmd_ajuda))
 tg_app.add_handler(CommandHandler("obra", cmd_obra))
 tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
 tg_app.add_handler(CommandHandler("receita", cmd_receita))
@@ -1747,13 +1885,21 @@ tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
 @app.on_event("startup")
 async def on_startup():
+    global _KEEPALIVE_TASK
     await tg_app.initialize()
     await tg_app.start()
+    # inicia keepalive diário pro Supabase free
+    if _KEEPALIVE_TASK is None:
+        _KEEPALIVE_TASK = asyncio.create_task(_daily_keepalive_loop())
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    await tg_app.stop()
-    await tg_app.shutdown()
+    try:
+        await tg_app.stop()
+        await tg_app.shutdown()
+    finally:
+        # não precisa cancelar task; container vai encerrar
+        pass
 
 # =====================================================================================
 #                               FASTAPI ENDPOINTS
@@ -1768,6 +1914,11 @@ async def webhook(req: Request):
     update = Update.de_json(data, tg_app.bot)
     await tg_app.process_update(update)
     return {"ok": True}
+
+@app.get("/ping")
+async def ping():
+    ok = await _supabase_keepalive_once()
+    return {"ok": True, "supabase": "ok" if ok else "fail"}
 
 @app.get("/")
 def alive():
