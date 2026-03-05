@@ -355,10 +355,89 @@ COMPANY_BALANCE_RE = re.compile(
 # =====================================================================================
 
 def money_from_text(txt: str):
-    s = _norm(txt).replace("r$", "r$ ").strip()
-    candidates = list(re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s))
-    if not candidates:
+    """
+    Extrai valor monetário do texto.
+    - Ignora padrões de data (ex: 24/02/2026) para não virar "2026 reais".
+    - Entende "mil", "2 mil", "um mil", etc.
+    """
+    if not txt:
         return None
+
+    original = txt
+    s = _norm(txt).replace("r$", "r$ ").strip()
+
+    # 1) Remove datas dd/mm/aaaa (ou dd-mm-aaaa) para não confundir com valor
+    s_wo_dates = re.sub(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b", " ", s)
+
+    # 2) Primeiro tenta capturar valores numéricos "normais"
+    candidates = list(re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s_wo_dates))
+    if candidates:
+        def to_float(token: str):
+            token = token.replace(".", "").replace(",", ".")
+            return float(token)
+
+        # Preferir quando tiver "reais/real" perto ou "r$"
+        for m in candidates:
+            after = s_wo_dates[m.end(): m.end() + 12]
+            before = s_wo_dates[max(0, m.start()-6): m.start()]
+            if re.search(r"\b(reais|real)\b", after) or "r$" in before:
+                try:
+                    return round(to_float(m.group(0)), 2)
+                except Exception:
+                    continue
+
+        # Senão, usa o último candidato como fallback
+        last = candidates[-1]
+        try:
+            return round(to_float(last.group(0)), 2)
+        except Exception:
+            return None
+
+    # 3) Se não achou número, tenta entender "mil" (por extenso)
+    # Exemplos:
+    # "mil reais" -> 1000
+    # "2 mil" -> 2000
+    # "um mil" -> 1000
+    # "dois mil" -> 2000
+    low = _norm(original)
+
+    word_nums = {
+        "um": 1, "uma": 1,
+        "dois": 2, "duas": 2,
+        "tres": 3, "três": 3,
+        "quatro": 4,
+        "cinco": 5,
+        "seis": 6,
+        "sete": 7,
+        "oito": 8,
+        "nove": 9,
+        "dez": 10,
+        "quinze": 15,
+        "vinte": 20,
+        "trinta": 30,
+    }
+
+    # "2 mil"
+    m = re.search(r"\b(\d+)\s*mil\b", low)
+    if m:
+        try:
+            return float(int(m.group(1)) * 1000)
+        except Exception:
+            pass
+
+    # "um mil", "dois mil", etc
+    m = re.search(r"\b([a-zçãõáéíóúâêîôû]+)\s*mil\b", low)
+    if m:
+        w = m.group(1)
+        n = word_nums.get(w)
+        if n:
+            return float(n * 1000)
+
+    # "mil" sozinho
+    if re.search(r"\bmil\b", low):
+        return 1000.0
+
+    return None
 
     def to_float(token: str):
         token = token.replace(".", "").replace(",", ".")
@@ -707,7 +786,15 @@ def _set_last_entry_id_to_db(tg_user_id: int, entry_id: int | None):
 # =====================================================================================
 
 def is_correction_intent(text: str) -> bool:
-    t = _norm(text or "")
+    t_norm = _norm(text or "").strip()
+
+    # Correção "automática" quando a mensagem é só uma data (ou "em <data>")
+    # Ex: "24/02/2026" ou "em 24/02/2026"
+    if re.fullmatch(r"(em\s+)?\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?", t_norm):
+        # garante que não tem valor monetário real (e que a data é válida)
+        if parse_date_pt(text) and money_from_text(text) is None:
+            return True
+
     return bool(re.search(
         r"\b("
         r"corrig(e|ir|e ai)|"
@@ -721,7 +808,7 @@ def is_correction_intent(text: str) -> bool:
         r"o\s+certo\s+e|"
         r"era\s+.*\s+mas\s+e"
         r")\b",
-        t
+        t_norm
     ))
 
 def extract_correction_targets(text: str) -> dict:
