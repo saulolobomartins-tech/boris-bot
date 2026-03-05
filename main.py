@@ -36,7 +36,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not (TOKEN and SUPABASE_URL and SUPABASE_KEY):
-    raise RuntimeError("Faltam variáveis de ambiente: TELEGRAM_TOKEN, SUPABASE_URL, SUPABASE_KEY")
+    raise RuntimeError("Faltam variáveis de ambiente: TELEGRAM_TOKEN, TELEGRAM_TOKEN, SUPABASE_URL, SUPABASE_KEY")
 
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -55,7 +55,6 @@ async def _supabase_keepalive_once():
     Não depende de endpoint externo; consulta simples no banco.
     """
     try:
-        # consulta mínima
         sb.table("accounts").select("id").limit(1).execute()
         return True
     except Exception:
@@ -66,14 +65,12 @@ async def _daily_keepalive_loop():
     Loop simples: roda 1x por dia.
     Obs: Se teu serviço tiver múltiplos workers/replicas, pode rodar mais de 1x/dia. É ok pro objetivo.
     """
-    # pequeno atraso inicial pra não bater junto no deploy
     await asyncio.sleep(10)
     while True:
         try:
             await _supabase_keepalive_once()
         except Exception:
             pass
-        # 24h
         await asyncio.sleep(24 * 60 * 60)
 
 # =====================================================================================
@@ -113,6 +110,25 @@ def _clip(s: str, n: int = 40) -> str:
     if len(s) <= n:
         return s
     return s[:n-1] + "…"
+
+# -------------------- NOVO: envio “safe” pro Telegram (quebra mensagens longas) --------------------
+TG_SAFE_CHUNK = 3600  # margem segura (limite real ~4096)
+async def _send_long(update: Update, text: str):
+    text = text or ""
+    if len(text) <= TG_SAFE_CHUNK:
+        await update.message.reply_text(text)
+        return
+
+    lines = text.split("\n")
+    buff = ""
+    for ln in lines:
+        if len(buff) + len(ln) + 1 > TG_SAFE_CHUNK:
+            await update.message.reply_text(buff)
+            buff = ln
+        else:
+            buff = (buff + "\n" + ln) if buff else ln
+    if buff:
+        await update.message.reply_text(buff)
 
 # =====================================================================================
 #                              MULTI-TENANT (account_id)
@@ -189,7 +205,6 @@ def ensure_cost_center_id(account_id: str, code: str) -> str | None:
 # =====================================================================================
 
 CATEGORY_RULES = [
-    # ---------------- MÃO DE OBRA ----------------
     (r"\b("
      r"mao\s*de\s*obra|m[aã]o\s*de\s*obra|"
      r"diari(a|as)|di[aá]ria(s)?|"
@@ -222,7 +237,6 @@ CATEGORY_RULES = [
      r"montagem|instal(a|aç)[aã]o"
      r")\b", "Mão de Obra"),
 
-    # ---------------- LAZER (novo) ----------------
     (r"\b("
      r"lazer|"
      r"bar|cerveja|churrasco|restaurante|pizza|cinema|show|balada|happy\s*hour|"
@@ -230,8 +244,6 @@ CATEGORY_RULES = [
      r"drink(s)?"
      r")\b", "Lazer"),
 
-    # ---------------- LOGÍSTICA / TRANSPORTE (reforçado) ----------------
-    # (inclui "munk/munck" e custos de transporte e veículos)
     (r"\b("
      r"uber|frete|entrega|logistic(a|o)?|transport(e|adora)?|"
      r"carretinha|carrocinha|reboque|"
@@ -253,7 +265,6 @@ CATEGORY_RULES = [
     (r"\b(eletric(a|o)?|fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric)\b", "Elétrico"),
     (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|pvc\b|joelho|te\b|luva\b|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba|sifao|sifão)\b", "Hidráulico"),
 
-    # ---------------- REVESTIMENTOS (novo) ----------------
     (r"\b("
      r"revestimento(s)?|"
      r"forro(\s*pvc)?|"
@@ -263,10 +274,8 @@ CATEGORY_RULES = [
 
     (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray|textura|zarcao|zarc[aã]o)\b", "Pintura"),
 
-    # Estrutura: adiciona perfil/perfis/metalon/metalons
     (r"\b(estrutura|fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento|perfil|perfis|metalon|metalons)\b", "Estrutura/Alvenaria"),
 
-    # Esquadrias: adiciona fechadura/dobradiça/trinco/cadeado/vidro/janela...
     (r"\b("
      r"porta(s)?|"
      r"janela(s)?|janela\s+de\s+vidro|"
@@ -281,7 +290,6 @@ CATEGORY_RULES = [
 
     (r"\b(telha|calha|rufo|cumeeira|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
 
-    # Acabamento
     (r"\b("
      r"acabamento|"
      r"piso|porcelanato|ceramica|cerâmica|"
@@ -302,7 +310,6 @@ CATEGORY_RULES = [
     (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
     (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
 
-    # Equipamentos: tira prioridade de munck/munck (já pega na logística)
     (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|plataforma|guindaste)\b", "Equipamentos"),
 
     (r"\b(trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio)\b", "Marketing"),
@@ -350,33 +357,48 @@ COMPANY_BALANCE_RE = re.compile(
     re.I
 )
 
+# -------------------- NOVO: detectar “período explícito” --------------------
+PERIOD_MARKERS = [
+    "este mes", "essa semana", "semana passada", "mes passado",
+    "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
+    "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+]
+DATE_RE = re.compile(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b")
+
+def has_explicit_period(text: str) -> bool:
+    low = _norm(text or "")
+    if DATE_RE.search(low):
+        return True
+    for mk in PERIOD_MARKERS:
+        if mk in low:
+            return True
+    return False
+
+def all_time_period_label():
+    today = date.today()
+    start = date(1900, 1, 1).isoformat()
+    end = (today + timedelta(days=1)).isoformat()
+    return start, end, "todo o período"
+
 # =====================================================================================
 #                               PARSE DE TEXTO
 # =====================================================================================
 
 def money_from_text(txt: str):
-    """
-    Extrai valor monetário do texto.
-    - Ignora padrões de data (ex: 24/02/2026) para não virar "2026 reais".
-    - Entende "mil", "2 mil", "um mil", etc.
-    """
     if not txt:
         return None
 
     original = txt
     s = _norm(txt).replace("r$", "r$ ").strip()
-
-    # 1) Remove datas dd/mm/aaaa (ou dd-mm-aaaa) para não confundir com valor
     s_wo_dates = re.sub(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b", " ", s)
 
-    # 2) Primeiro tenta capturar valores numéricos "normais"
     candidates = list(re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s_wo_dates))
     if candidates:
         def to_float(token: str):
             token = token.replace(".", "").replace(",", ".")
             return float(token)
 
-        # Preferir quando tiver "reais/real" perto ou "r$"
         for m in candidates:
             after = s_wo_dates[m.end(): m.end() + 12]
             before = s_wo_dates[max(0, m.start()-6): m.start()]
@@ -386,14 +408,12 @@ def money_from_text(txt: str):
                 except Exception:
                     continue
 
-        # Senão, usa o último candidato como fallback
         last = candidates[-1]
         try:
             return round(to_float(last.group(0)), 2)
         except Exception:
             return None
 
-    # 3) Se não achou número, tenta entender "mil" (por extenso)
     low = _norm(original)
 
     word_nums = {
@@ -412,7 +432,6 @@ def money_from_text(txt: str):
         "trinta": 30,
     }
 
-    # "2 mil"
     m = re.search(r"\b(\d+)\s*mil\b", low)
     if m:
         try:
@@ -420,7 +439,6 @@ def money_from_text(txt: str):
         except Exception:
             pass
 
-    # "um mil", "dois mil", etc
     m = re.search(r"\b([a-zçãõáéíóúâêîôû]+)\s*mil\b", low)
     if m:
         w = m.group(1)
@@ -428,7 +446,6 @@ def money_from_text(txt: str):
         if n:
             return float(n * 1000)
 
-    # "mil" sozinho
     if re.search(r"\bmil\b", low):
         return 1000.0
 
@@ -459,7 +476,6 @@ def guess_cc(txt: str) -> str | None:
     if re.search(r"\b(sede|administrativo|adm)\b", t):
         return "SEDE"
 
-    # Blocos (A-F ou 1-6)
     m = re.search(r"\b(bloco|setor)\s+([a-f])\b", t)
     if m:
         return f"BLOCO_{m.group(2).upper()}"
@@ -474,7 +490,6 @@ def guess_cc(txt: str) -> str | None:
     if m:
         return m.group(1).upper()
 
-    # ---------------- CONTAINER (prioridade) ----------------
     m = re.search(r"\b(?:do|da|de|no|na)?\s*container\s+(?:do|da|de)?\s*([a-z0-9][a-z0-9\s\-_.]+)\b", t)
     if m:
         nome = m.group(1).strip()
@@ -485,7 +500,6 @@ def guess_cc(txt: str) -> str | None:
         if nome:
             return f"CONTAINER_{_slugify_name(nome)}"
 
-    # ---------------- OBRA/REFORMA (depois) ----------------
     m = re.search(r"\b(?:na|no)?\s*(obra|reforma)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
     if m:
         tipo = m.group(1)
@@ -505,7 +519,6 @@ def guess_cc_from_reply(txt: str) -> str | None:
     if cc:
         return cc
 
-    # Respostas rápidas: "A" / "1" / "Thiago" etc.
     if re.fullmatch(r"[a-f]", t):
         return f"BLOCO_{t.upper()}"
 
@@ -513,7 +526,6 @@ def guess_cc_from_reply(txt: str) -> str | None:
         letter = "ABCDEF"[int(t) - 1]
         return f"BLOCO_{letter}"
 
-    # Permite "container thiago" direto como resposta
     m = re.fullmatch(r"container\s+(.+)", t)
     if m:
         nome = m.group(1).strip()
@@ -579,9 +591,7 @@ def _last_day_of_week(d: date):
 def parse_period_pt(text: str):
     """
     Retorna (start_iso, end_iso, label)
-
-    ✅ Agora entende mês por nome:
-    - "fevereiro" / "em fevereiro" / "fevereiro 2026" / "fevereiro de 2026"
+    ✅ entende mês por nome e períodos relativos
     """
     low = _norm(text)
     today = date.today()
@@ -605,14 +615,12 @@ def parse_period_pt(text: str):
     def word_to_number(w):
         return NUM_WORDS.get(w)
 
-    # ---------------- MESES POR NOME (NOVO) ----------------
     month_map = {
         "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
         "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
         "novembro": 11, "dezembro": 12
     }
 
-    # Ex: "saldo em fevereiro", "extrato fevereiro 2026", "fevereiro de 2026"
     mmo = re.search(
         r"\b(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b(?:\s*(?:de\s*)?(\d{4}))?",
         low
@@ -629,8 +637,6 @@ def parse_period_pt(text: str):
                 e = date(year, mon + 1, 1)
             label = f"{mon_name}{' ' + str(year) if mmo.group(2) else ''}"
             return s.isoformat(), e.isoformat(), label
-
-    # -------------------------------------------------------
 
     if re.search(r"\b(ultima|última)\s+quinzena\b", low):
         s = today - timedelta(days=15)
@@ -708,6 +714,9 @@ def guess_cc_filter(text: str):
 def is_company_balance_request(text: str) -> bool:
     return bool(COMPANY_BALANCE_RE.search(text or ""))
 
+# -------------------- NOVO: detectar tipo desejado --------------------
+EXPENSE_HINT_RE = re.compile(r"\b(despesa|despesas|gasto|gastei|paguei|comprei|saida|saída)\b", re.I)
+
 def is_income_query(text: str):
     t = _norm(text or "")
     return bool(re.search(
@@ -722,6 +731,26 @@ def is_income_query(text: str):
         r"pix\s+recebid[oa]"
         r")\b", t, re.I
     ))
+
+def detect_type_filter(text: str) -> str | None:
+    """
+    Retorna:
+    - "income" se a frase pede receita
+    - "expense" se a frase pede despesa
+    - None se for extrato (quer os dois) ou não ficou claro
+    """
+    t = _norm(text or "")
+    if is_income_query(t):
+        return "income"
+    if EXPENSE_HINT_RE.search(t):
+        return "expense"
+    # Se for “extrato”, default é ambos
+    if "extrato" in t:
+        return None
+    # Se a pessoa falou “lista”/“lançamentos” sem dizer tipo, eu considero ambos
+    if re.search(r"\b(lista|lan[cç]amentos?)\b", t):
+        return None
+    return "expense"  # fallback antigo (pra manter comportamento em “quanto gastei” sem dizer)
 
 def is_report_intent(text: str):
     return bool(QUERY_INTENT_RE.search(text or ""))
@@ -795,7 +824,6 @@ def _set_last_entry_id_to_db(tg_user_id: int, entry_id: int | None):
 def is_correction_intent(text: str) -> bool:
     t_norm = _norm(text or "").strip()
 
-    # Correção "automática" quando a mensagem é só uma data (ou "em <data>")
     if re.fullmatch(r"(em\s+)?\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?", t_norm):
         if parse_date_pt(text) and money_from_text(text) is None:
             return True
@@ -1134,7 +1162,7 @@ async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Top categorias:\n{top_fmt(by_cat)}\n\n"
             f"Top centros de custo:\n{top_fmt(by_cc)}"
         )
-        await update.message.reply_text(msg)
+        await _send_long(update, msg)
 
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /resumo: {type(e).__name__}: {e}")
@@ -1223,6 +1251,13 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /desfazer: {type(e).__name__}: {e}")
 
+# -------------------- NOVO: helpers de relatório --------------------
+def _fmt_ranked(d: dict[str, float], limit: int | None = None) -> str:
+    items = sorted(d.items(), key=lambda x: x[1], reverse=True)
+    if limit:
+        items = items[:limit]
+    return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
+
 async def run_query_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
@@ -1230,17 +1265,21 @@ async def run_query_and_reply(update: Update, text: str):
         return
     account_id = user_row.get("account_id") or get_default_account_id()
 
-    start, end, label = parse_period_pt(text)
-    cat = guess_category_filter(text)
-    paid = guess_paid_filter(text)
     cc_code = guess_cc_filter(text)
-    is_income = is_income_query(text)
+    paid = guess_paid_filter(text)
+    cat = guess_category_filter(text)
+
+    # ✅ Se tem CC e não tem período explícito -> todo o período
+    if cc_code and not has_explicit_period(text):
+        start, end, label = all_time_period_label()
+    else:
+        start, end, label = parse_period_pt(text)
+
+    typ = detect_type_filter(text)
 
     q = sb.table("entries").select("amount,category_id,cost_center_id,paid_via,type,entry_date") \
         .eq("account_id", account_id) \
         .gte("entry_date", start).lt("entry_date", end)
-
-    q = q.eq("type", "income" if is_income else "expense")
 
     if paid:
         q = q.eq("paid_via", paid)
@@ -1257,18 +1296,35 @@ async def run_query_and_reply(update: Update, text: str):
         if ccd:
             q = q.eq("cost_center_id", ccd[0]["id"])
 
+    if typ in ("income", "expense"):
+        q = q.eq("type", typ)
+
     rows = get_or_none(q.execute()) or []
-    total = sum(float(r["amount"]) for r in rows)
+
+    receitas = sum(float(r["amount"]) for r in rows if r.get("type") == "income")
+    despesas = sum(float(r["amount"]) for r in rows if r.get("type") == "expense")
+    saldo = receitas - despesas
 
     filtros = []
+    if cc_code: filtros.append(cc_code)
     if cat: filtros.append(cat)
     if paid: filtros.append(paid.title())
-    if cc_code: filtros.append(cc_code)
     filtros_txt = f" | Filtros: {', '.join(filtros)}" if filtros else ""
 
-    await update.message.reply_text(
-        f"📊 Total de {'receitas' if is_income else 'despesas'} em {label}{filtros_txt}:\n{moeda_fmt(total)}"
-    )
+    if typ == "income":
+        msg = f"📊 Total de receitas em {label}{filtros_txt}:\n{moeda_fmt(receitas)}"
+    elif typ == "expense":
+        msg = f"📊 Total de despesas em {label}{filtros_txt}:\n{moeda_fmt(despesas)}"
+    else:
+        msg = (
+            f"📊 Totais em {label}{filtros_txt}\n"
+            f"Receitas: {moeda_fmt(receitas)}\n"
+            f"Despesas: {moeda_fmt(despesas)}\n"
+            f"——————————————\n"
+            f"Saldo: {moeda_fmt(saldo)}"
+        )
+
+    await update.message.reply_text(msg)
 
 async def run_list_entries_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -1277,17 +1333,26 @@ async def run_list_entries_and_reply(update: Update, text: str):
         return
     account_id = user_row.get("account_id") or get_default_account_id()
 
-    start, end, label = parse_period_pt(text)
-    is_income = is_income_query(text)
     cc_code = guess_cc_filter(text)
     cat = guess_category_filter(text)
+
+    # ✅ Se tem CC e não tem período explícito -> todo o período
+    if cc_code and not has_explicit_period(text):
+        start, end, label = all_time_period_label()
+    else:
+        start, end, label = parse_period_pt(text)
+
+    typ = detect_type_filter(text)  # income / expense / None (ambos)
+
+    # ✅ Limites melhorados
+    low = _norm(text or "")
+    limit = 2000 if re.search(r"\b(completo|tudo|inteiro)\b", low) else 200
 
     q = sb.table("entries").select("amount,type,entry_date,description,category_id,cost_center_id") \
         .eq("account_id", account_id) \
         .gte("entry_date", start).lt("entry_date", end) \
-        .eq("type", "income" if is_income else "expense") \
         .order("entry_date", desc=True) \
-        .limit(30)
+        .limit(limit)
 
     if cc_code:
         cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
@@ -1301,8 +1366,10 @@ async def run_list_entries_and_reply(update: Update, text: str):
         if cd:
             q = q.eq("category_id", cd[0]["id"])
 
-    rows = get_or_none(q.execute()) or []
+    if typ in ("income", "expense"):
+        q = q.eq("type", typ)
 
+    rows = get_or_none(q.execute()) or []
     if not rows:
         await update.message.reply_text(f"📄 Sem lançamentos em {label}" + (f" para {cc_code}" if cc_code else "") + ".")
         return
@@ -1312,23 +1379,55 @@ async def run_list_entries_and_reply(update: Update, text: str):
     cats = {r["id"]: r["name"] for r in cats_rows}
     ccs  = {r["id"]: r["code"] for r in ccs_rows}
 
-    total = sum(float(r["amount"]) for r in rows)
-    header = f"📄 Lista de {'receitas' if is_income else 'despesas'} — {label}"
+    receitas = sum(float(r["amount"]) for r in rows if r.get("type") == "income")
+    despesas = sum(float(r["amount"]) for r in rows if r.get("type") == "expense")
+    saldo = receitas - despesas
+
+    by_cat_exp = defaultdict(float)
+    by_cat_inc = defaultdict(float)
+
+    lines = []
+    for r in rows:
+        v = float(r["amount"])
+        dt = data_fmt_out(r.get("entry_date"))
+        cat_name = cats.get(r.get("category_id"), "Sem categoria")
+        cc_name = ccs.get(r.get("cost_center_id"), "Sem CC")
+        desc = _clip(r.get("description") or "", 60)
+
+        if r.get("type") == "income":
+            by_cat_inc[cat_name] += v
+            icon = "✅"
+            typ_label = "Receita"
+        else:
+            by_cat_exp[cat_name] += v
+            icon = "⛔"
+            typ_label = "Despesa"
+
+        lines.append(f"• {dt} {icon} {moeda_fmt(v)} — {cat_name} — {cc_name}\n  {_clip(desc, 90)}")
+
+    header = f"📄 Extrato (lista) — {label}"
     if cc_code:
         header += f" | {cc_code}"
     if cat:
         header += f" | {cat}"
 
-    lines = []
-    for r in rows:
-        dt = data_fmt_out(r.get("entry_date"))
-        cat_name = cats.get(r.get("category_id"), "Sem categoria")
-        cc_name = ccs.get(r.get("cost_center_id"), "Sem CC")
-        desc = _clip(r.get("description") or "", 45)
-        lines.append(f"• {dt} — {moeda_fmt(float(r['amount']))} — {cat_name} — {cc_name}\n  {_clip(desc, 60)}")
+    note = ""
+    if len(rows) >= limit:
+        note = f"\n⚠️ Mostrando até {limit} itens. Se quiser garantir tudo: escreva “extrato completo {cc_code or ''} {label}”."
 
-    msg = header + "\n" + "——————————————\n" + f"Total (até 30 itens): {moeda_fmt(total)}\n\n" + "\n".join(lines)
-    await update.message.reply_text(msg)
+    msg = (
+        header + "\n"
+        "——————————————\n"
+        f"Receitas: {moeda_fmt(receitas)}\n"
+        f"Despesas: {moeda_fmt(despesas)}\n"
+        f"Saldo: {moeda_fmt(saldo)}\n\n"
+        f"Resumo por categoria (despesas):\n{_fmt_ranked(by_cat_exp, limit=10)}\n\n"
+        f"Resumo por categoria (receitas):\n{_fmt_ranked(by_cat_inc, limit=10)}\n"
+        + note +
+        "\n\nLançamentos:\n" + "\n".join(lines)
+    )
+
+    await _send_long(update, msg)
 
 async def run_balance_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -1337,10 +1436,14 @@ async def run_balance_and_reply(update: Update, text: str):
         return
     account_id = user_row.get("account_id") or get_default_account_id()
 
-    start, end, label = parse_period_pt(text)
-
     # Opção B: saldo da empresa quando pedir "saldo da empresa/geral"
     cc_code = None if is_company_balance_request(text) else guess_cc_filter(text)
+
+    # ✅ Se tem CC e não tem período explícito -> todo o período
+    if cc_code and not has_explicit_period(text):
+        start, end, label = all_time_period_label()
+    else:
+        start, end, label = parse_period_pt(text)
 
     base = sb.table("entries").select("amount,type,cost_center_id,entry_date") \
         .eq("account_id", account_id) \
@@ -1378,12 +1481,16 @@ async def run_cc_full_summary(update: Update, text: str):
         return
     account_id = user_row.get("account_id") or get_default_account_id()
 
-    start, end, label = parse_period_pt(text)
     cc_code = guess_cc_filter(text)
-
     if not cc_code:
         await update.message.reply_text("Me diz qual centro de custo. Ex: 'resumo da obra do Rodrigo' ou 'resumo do container do Thiago'.")
         return
+
+    # ✅ Se não tem período explícito -> todo o período
+    if not has_explicit_period(text):
+        start, end, label = all_time_period_label()
+    else:
+        start, end, label = parse_period_pt(text)
 
     cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
     ccd = get_or_none(cc) or []
@@ -1425,10 +1532,6 @@ async def run_cc_full_summary(update: Update, text: str):
 
     saldo = total_in - total_out
 
-    def top_fmt(d, limit=5):
-        items = sorted(d.items(), key=lambda x: x[1], reverse=True)[:limit]
-        return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
-
     msg = (
         f"📊 Resumo — {cc_code}\n"
         f"Período: {label}\n"
@@ -1436,10 +1539,10 @@ async def run_cc_full_summary(update: Update, text: str):
         f"Receitas: {moeda_fmt(total_in)}\n"
         f"Despesas: {moeda_fmt(total_out)}\n"
         f"Saldo: {moeda_fmt(saldo)}\n\n"
-        f"Top despesas (categorias):\n{top_fmt(by_cat_exp)}\n\n"
-        f"Top receitas (categorias):\n{top_fmt(by_cat_inc)}"
+        f"Despesas por categoria:\n{_fmt_ranked(by_cat_exp, limit=10)}\n\n"
+        f"Receitas por categoria:\n{_fmt_ranked(by_cat_inc, limit=10)}"
     )
-    await update.message.reply_text(msg)
+    await _send_long(update, msg)
 
 async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None = None):
     user_row = _get_user_row(update.effective_user.id)
@@ -1448,7 +1551,12 @@ async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None =
         return
     account_id = user_row.get("account_id") or get_default_account_id()
 
-    start, end, label = parse_period_pt(period_text or "este mês")
+    # ✅ Se não passar período ou passar texto sem período explícito -> todo o período
+    base_text = period_text or ""
+    if not base_text or not has_explicit_period(base_text):
+        start, end, label = all_time_period_label()
+    else:
+        start, end, label = parse_period_pt(base_text)
 
     cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
     ccd = get_or_none(cc) or []
@@ -1492,18 +1600,13 @@ async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None =
 
     saldo = total_in - total_out
 
-    def top_fmt(d, limit=5):
-        items = sorted(d.items(), key=lambda x: x[1], reverse=True)[:limit]
-        return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
-
-    last10 = rows[:10]
     last_lines = []
-    for r in last10:
+    for r in rows[:12]:
         icon = entry_emoji(r.get("type"))
         dt = data_fmt_out(r.get("entry_date"))
         cat_name = cats.get(r.get("category_id"), "Sem categoria")
-        desc = _clip(r.get("description") or "", 42)
-        last_lines.append(f"• {dt} {icon} {moeda_fmt(float(r['amount']))} — {cat_name}\n  {_clip(desc, 60)}")
+        desc = _clip(r.get("description") or "", 60)
+        last_lines.append(f"• {dt} {icon} {moeda_fmt(float(r['amount']))} — {cat_name}\n  {_clip(desc, 90)}")
 
     msg = (
         f"📒 Extrato — {cc_code}\n"
@@ -1512,11 +1615,11 @@ async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None =
         f"Receitas: {moeda_fmt(total_in)}\n"
         f"Despesas: {moeda_fmt(total_out)}\n"
         f"Saldo: {moeda_fmt(saldo)}\n\n"
-        f"Top despesas (categorias):\n{top_fmt(by_cat_exp)}\n\n"
-        f"Top receitas (categorias):\n{top_fmt(by_cat_inc)}\n\n"
+        f"Despesas por categoria:\n{_fmt_ranked(by_cat_exp, limit=10)}\n\n"
+        f"Receitas por categoria:\n{_fmt_ranked(by_cat_inc, limit=10)}\n\n"
         f"Últimos lançamentos:\n" + "\n".join(last_lines)
     )
-    await update.message.reply_text(msg)
+    await _send_long(update, msg)
 
 # =====================================================================================
 #                               PROCESSAMENTO ÚNICO (texto e áudio)
@@ -1555,40 +1658,34 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 await update.message.reply_text("Não entendi o centro de custo. Ex: Bloco A, Sede, obra do Rodrigo, container do Thiago.")
                 return
 
-        # Correções primeiro
         if is_correction_intent(user_text):
             applied = await try_apply_correction(update, user_text)
             if applied:
                 return
 
-        # Lista detalhada tem prioridade sobre setar CC
-        if is_list_request(user_text) and (is_report_intent(user_text) or guess_cc_filter(user_text) or is_income_query(user_text)):
+        # ✅ Lista/extrato tem prioridade
+        if is_list_request(user_text) and (is_report_intent(user_text) or guess_cc_filter(user_text) or is_income_query(user_text) or "extrato" in _norm(user_text)):
             await run_list_entries_and_reply(update, user_text)
             return
 
-        # saldo
         if is_saldo_intent(user_text):
             await run_balance_and_reply(update, user_text)
             return
 
-        # resumo por CC (obra/container/bloco/sede)
         if is_summary_request(user_text) and guess_cc_filter(user_text):
             await run_cc_full_summary(update, user_text)
             return
 
-        # relatório/consulta (total)
         if is_report_intent(user_text):
             await run_query_and_reply(update, user_text)
             return
 
-        # seta CC sem valor (e SEM intenção de consulta)
         cc_only = guess_cc(user_text)
         if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text) and not is_saldo_intent(user_text):
             _set_last_cc(uid, cc_only)
             await update.message.reply_text(f"✅ Centro de custo atual definido:\n{cc_only}")
             return
 
-        # se não tem CC nem last_cc e tem valor -> pede CC
         cc_in_text = guess_cc(user_text)
         last_cc = _get_last_cc(uid)
 
@@ -1630,6 +1727,8 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "• recebi mil do container do Thiago\n"
                 "• paguei mil pra transportar o container da Ellen de munk\n"
                 "• saldo do container da Ellen em fevereiro\n"
+                "• saldo do container do Thiago   (vai pegar TODO o período)\n"
+                "• extrato do container do Thiago completo\n"
                 "• saldo da empresa este mês\n"
                 "• resumo do container do Thiago\n"
                 "• me dá uma lista de tudo que eu gastei na obra do João em fevereiro\n"
@@ -1768,17 +1867,13 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             by_cat[cats.get(r["category_id"], "Sem categoria")] += v
             by_cc[ccs.get(r["cost_center_id"], "Sem CC")] += v
 
-        def fmt(d):
-            items = sorted(d.items(), key=lambda x: x[1], reverse=True)
-            return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
-
         msg = (
             f"📊 Resumo do mês (despesas)\n"
             f"Total: {moeda_fmt(total)}\n\n"
-            f"Por categoria:\n{fmt(by_cat)}\n\n"
-            f"Por centro de custo:\n{fmt(by_cc)}"
+            f"Por categoria:\n{_fmt_ranked(by_cat)}\n\n"
+            f"Por centro de custo:\n{_fmt_ranked(by_cc)}"
         )
-        await update.message.reply_text(msg)
+        await _send_long(update, msg)
 
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /relatorio: {type(e).__name__}: {e}")
@@ -1801,17 +1896,11 @@ async def cmd_categorias(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         names = [r["name"] for r in cats_rows if r.get("name")]
         msg = "📁 Categorias:\n" + "\n".join([f"• {n}" for n in names])
-        await update.message.reply_text(msg)
+        await _send_long(update, msg)
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /categorias: {type(e).__name__}: {e}")
 
 async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /extrato_obra João
-    /extrato_obra João este mês
-    /extrato_obra João fevereiro
-    /extrato_obra Rodrigo semana passada
-    """
     raw = " ".join(context.args).strip()
     if not raw:
         await update.message.reply_text("Uso: /extrato_obra <nome> [período]. Ex: /extrato_obra João fevereiro")
@@ -1819,16 +1908,8 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     low = _norm(raw)
 
-    # marcadores incluem meses (NOVO)
-    period_markers = [
-        "este mes", "essa semana", "semana passada", "mes passado",
-        "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
-        "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
-        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
-    ]
-
     split_idx = None
-    for mk in period_markers:
+    for mk in PERIOD_MARKERS:
         pos = low.find(mk)
         if pos != -1:
             split_idx = pos
@@ -1836,10 +1917,10 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if split_idx is None:
         name = raw
-        period_txt = "este mês"
+        period_txt = ""  # ✅ agora vai virar “todo o período”
     else:
         name = raw[:split_idx].strip()
-        period_txt = raw[split_idx:].strip() or "este mês"
+        period_txt = raw[split_idx:].strip()
 
     if not name:
         await update.message.reply_text("Me diz o nome da obra. Ex: /extrato_obra João fevereiro")
@@ -1861,33 +1942,29 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Container: \"container do Thiago\" → `CONTAINER_THIAGO`\n"
         "• Bloco/Setor: \"bloco A\" → `BLOCO_A`\n"
         "• Sede: \"sede\"/\"adm\" → `SEDE`\n\n"
+        "✅ **Consultas**\n"
+        "• \"saldo do container do Thiago\" → pega **todo o período** (se não disser mês)\n"
+        "• \"saldo do container do Thiago em fevereiro\" → pega fevereiro\n"
+        "• \"extrato do container do Thiago\" → lista + resumo (receitas e despesas)\n"
+        "• \"extrato completo do container do Thiago\" → até 2000 itens\n\n"
         "✅ **Comandos**\n"
         "• /start — cadastra/mostra teu id\n"
         "• /autorizar <id> — (owner) autoriza usuário\n"
         "• /obra <nome> — define CC do dia (OBRA)\n"
         "• /despesa <texto> — força tratar como despesa\n"
         "• /receita <texto> — força tratar como receita\n"
-        "• /saldo [período] — saldo do período\n"
-        "   - exemplo: /saldo fevereiro\n"
-        "   - exemplo: \"saldo da empresa fevereiro\" (saldo geral)\n"
+        "• /saldo [período]\n"
         "• /relatorio — resumo do mês (despesas)\n"
         "• /resumo — resumo da semana (despesas)\n"
         "• /desfazer — apaga o último lançamento\n"
-        "• /categorias — lista categorias cadastradas\n"
-        "• /extrato_obra <nome> [período] — extrato/mini-DRE da obra\n\n"
-        "✅ **Consultas em texto**\n"
-        "• \"quanto gastei em fevereiro?\"\n"
-        "• \"saldo do container da Ellen em fevereiro\"\n"
-        "• \"me dá uma lista do que eu gastei na obra do João em março\"\n\n"
-        "ℹ️ Dica: se você mandar um lançamento sem CC e não tiver CC anterior, o Boris vai perguntar qual CC."
+        "• /categorias — lista categorias\n"
+        "• /extrato_obra <nome> [período]\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# -------------------- TEXTO --------------------
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_user_text(update, context, update.message.text or "")
 
-# -------------------- ÁUDIO (voice/audio) --------------------
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not oa_client:
         await update.message.reply_text("Whisper não está configurado (OPENAI_API_KEY ausente).")
@@ -1982,7 +2059,6 @@ async def on_startup():
     global _KEEPALIVE_TASK
     await tg_app.initialize()
     await tg_app.start()
-    # inicia keepalive diário pro Supabase free
     if _KEEPALIVE_TASK is None:
         _KEEPALIVE_TASK = asyncio.create_task(_daily_keepalive_loop())
 
