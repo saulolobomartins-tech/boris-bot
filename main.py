@@ -394,11 +394,6 @@ def money_from_text(txt: str):
             return None
 
     # 3) Se não achou número, tenta entender "mil" (por extenso)
-    # Exemplos:
-    # "mil reais" -> 1000
-    # "2 mil" -> 2000
-    # "um mil" -> 1000
-    # "dois mil" -> 2000
     low = _norm(original)
 
     word_nums = {
@@ -438,25 +433,6 @@ def money_from_text(txt: str):
         return 1000.0
 
     return None
-
-    def to_float(token: str):
-        token = token.replace(".", "").replace(",", ".")
-        return float(token)
-
-    for m in candidates:
-        after = s[m.end(): m.end() + 12]
-        before = s[max(0, m.start()-6): m.start()]
-        if re.search(r"\b(reais|real)\b", after) or "r$" in before:
-            try:
-                return round(to_float(m.group(0)), 2)
-            except Exception:
-                continue
-
-    last = candidates[-1]
-    try:
-        return round(to_float(last.group(0)), 2)
-    except Exception:
-        return None
 
 def guess_payment(txt: str):
     low = _norm(txt)
@@ -499,7 +475,6 @@ def guess_cc(txt: str) -> str | None:
         return m.group(1).upper()
 
     # ---------------- CONTAINER (prioridade) ----------------
-    # Exemplos: "container do Thiago", "do container da Ellen", "container Thiago"
     m = re.search(r"\b(?:do|da|de|no|na)?\s*container\s+(?:do|da|de)?\s*([a-z0-9][a-z0-9\s\-_.]+)\b", t)
     if m:
         nome = m.group(1).strip()
@@ -551,7 +526,6 @@ def guess_cc_from_reply(txt: str) -> str | None:
     return None
 
 def guess_cc_strict_for_correction(txt: str) -> str | None:
-    # para correção, usa a mesma lógica (priorizando CONTAINER)
     return guess_cc(txt)
 
 def parse_date_pt(txt: str) -> str | None:
@@ -603,6 +577,12 @@ def _last_day_of_week(d: date):
     return _first_day_of_week(d) + timedelta(days=7)
 
 def parse_period_pt(text: str):
+    """
+    Retorna (start_iso, end_iso, label)
+
+    ✅ Agora entende mês por nome:
+    - "fevereiro" / "em fevereiro" / "fevereiro 2026" / "fevereiro de 2026"
+    """
     low = _norm(text)
     today = date.today()
 
@@ -624,6 +604,33 @@ def parse_period_pt(text: str):
 
     def word_to_number(w):
         return NUM_WORDS.get(w)
+
+    # ---------------- MESES POR NOME (NOVO) ----------------
+    month_map = {
+        "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
+        "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
+        "novembro": 11, "dezembro": 12
+    }
+
+    # Ex: "saldo em fevereiro", "extrato fevereiro 2026", "fevereiro de 2026"
+    mmo = re.search(
+        r"\b(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b(?:\s*(?:de\s*)?(\d{4}))?",
+        low
+    )
+    if mmo:
+        mon_name = mmo.group(1)
+        mon = month_map.get(mon_name)
+        year = int(mmo.group(2)) if mmo.group(2) else today.year
+        if mon:
+            s = date(year, mon, 1)
+            if mon == 12:
+                e = date(year + 1, 1, 1)
+            else:
+                e = date(year, mon + 1, 1)
+            label = f"{mon_name}{' ' + str(year) if mmo.group(2) else ''}"
+            return s.isoformat(), e.isoformat(), label
+
+    # -------------------------------------------------------
 
     if re.search(r"\b(ultima|última)\s+quinzena\b", low):
         s = today - timedelta(days=15)
@@ -789,9 +796,7 @@ def is_correction_intent(text: str) -> bool:
     t_norm = _norm(text or "").strip()
 
     # Correção "automática" quando a mensagem é só uma data (ou "em <data>")
-    # Ex: "24/02/2026" ou "em 24/02/2026"
     if re.fullmatch(r"(em\s+)?\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?", t_norm):
-        # garante que não tem valor monetário real (e que a data é válida)
         if parse_date_pt(text) and money_from_text(text) is None:
             return True
 
@@ -1437,12 +1442,6 @@ async def run_cc_full_summary(update: Update, text: str):
     await update.message.reply_text(msg)
 
 async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None = None):
-    """
-    Extrato (mini-DRE) do CC:
-    - receitas, despesas, saldo
-    - top despesas e top receitas por categoria
-    - lista dos últimos 10 lançamentos (independente do tipo)
-    """
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
         await update.message.reply_text("Usuário não autorizado.")
@@ -1628,14 +1627,14 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "Exemplos:\n"
                 "• paguei 200 no eletricista (pix) bloco A\n"
                 "• pix recebido 1554,21 obra do Rodrigo\n"
-                "• recebi 1000 do container do Thiago\n"
-                "• paguei 1000 pra transportar o container da Ellen de munk\n"
-                "• saldo da obra do Rodrigo\n"
+                "• recebi mil do container do Thiago\n"
+                "• paguei mil pra transportar o container da Ellen de munk\n"
+                "• saldo do container da Ellen em fevereiro\n"
                 "• saldo da empresa este mês\n"
                 "• resumo do container do Thiago\n"
-                "• me dá uma lista de tudo que eu gastei na obra do João\n"
+                "• me dá uma lista de tudo que eu gastei na obra do João em fevereiro\n"
                 "• quanto já recebi na obra do João?\n"
-                "• /extrato_obra João\n"
+                "• /extrato_obra João fevereiro\n"
                 "• corrige, era 150, é 200\n"
                 "• mudar a categoria para estrutura\n"
                 "• /ajuda\n"
@@ -1810,15 +1809,24 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /extrato_obra João
     /extrato_obra João este mês
+    /extrato_obra João fevereiro
     /extrato_obra Rodrigo semana passada
     """
     raw = " ".join(context.args).strip()
     if not raw:
-        await update.message.reply_text("Uso: /extrato_obra <nome> [período]. Ex: /extrato_obra João este mês")
+        await update.message.reply_text("Uso: /extrato_obra <nome> [período]. Ex: /extrato_obra João fevereiro")
         return
 
     low = _norm(raw)
-    period_markers = ["este mes", "essa semana", "semana passada", "mes passado", "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena"]
+
+    # marcadores incluem meses (NOVO)
+    period_markers = [
+        "este mes", "essa semana", "semana passada", "mes passado",
+        "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
+        "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
+        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+    ]
+
     split_idx = None
     for mk in period_markers:
         pos = low.find(mk)
@@ -1834,7 +1842,7 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
         period_txt = raw[split_idx:].strip() or "este mês"
 
     if not name:
-        await update.message.reply_text("Me diz o nome da obra. Ex: /extrato_obra João este mês")
+        await update.message.reply_text("Me diz o nome da obra. Ex: /extrato_obra João fevereiro")
         return
 
     cc = f"OBRA_{_slugify_name(name)}"
@@ -1846,8 +1854,8 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "——————————————\n"
         "✅ **Lançar despesas/receitas (texto ou áudio)**\n"
         "• \"paguei 150 de cabo elétrico na obra do Rodrigo\"\n"
-        "• \"recebi 1000 do container do Thiago\"\n"
-        "• \"paguei 1000 pra transportar o container da Ellen de munk\"\n\n"
+        "• \"recebi mil do container do Thiago\"\n"
+        "• \"paguei mil pra transportar o container da Ellen de munk\"\n\n"
         "✅ **Centro de custo (CC) entendido pelo texto**\n"
         "• Obra: \"obra do Rodrigo\" → `OBRA_RODRIGO`\n"
         "• Container: \"container do Thiago\" → `CONTAINER_THIAGO`\n"
@@ -1860,18 +1868,17 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /despesa <texto> — força tratar como despesa\n"
         "• /receita <texto> — força tratar como receita\n"
         "• /saldo [período] — saldo do período\n"
-        "   - exemplo: /saldo este mês\n"
-        "   - exemplo: \"saldo da empresa este mês\" (saldo geral)\n"
+        "   - exemplo: /saldo fevereiro\n"
+        "   - exemplo: \"saldo da empresa fevereiro\" (saldo geral)\n"
         "• /relatorio — resumo do mês (despesas)\n"
         "• /resumo — resumo da semana (despesas)\n"
         "• /desfazer — apaga o último lançamento\n"
         "• /categorias — lista categorias cadastradas\n"
         "• /extrato_obra <nome> [período] — extrato/mini-DRE da obra\n\n"
         "✅ **Consultas em texto**\n"
-        "• \"quanto gastei esse mês?\"\n"
-        "• \"quanto gastei em elétrica na obra do Rodrigo esse mês?\"\n"
-        "• \"saldo da empresa últimos 15 dias\"\n"
-        "• \"me dá uma lista do que eu gastei na obra do João esse mês\"\n\n"
+        "• \"quanto gastei em fevereiro?\"\n"
+        "• \"saldo do container da Ellen em fevereiro\"\n"
+        "• \"me dá uma lista do que eu gastei na obra do João em março\"\n\n"
         "ℹ️ Dica: se você mandar um lançamento sem CC e não tiver CC anterior, o Boris vai perguntar qual CC."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -1985,7 +1992,6 @@ async def on_shutdown():
         await tg_app.stop()
         await tg_app.shutdown()
     finally:
-        # não precisa cancelar task; container vai encerrar
         pass
 
 # =====================================================================================
