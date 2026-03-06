@@ -111,7 +111,7 @@ def _clip(s: str, n: int = 40) -> str:
         return s
     return s[:n-1] + "…"
 
-# -------------------- NOVO: envio “safe” pro Telegram (quebra mensagens longas) --------------------
+# -------------------- envio “safe” pro Telegram (quebra mensagens longas) --------------------
 TG_SAFE_CHUNK = 3600  # margem segura (limite real ~4096)
 async def _send_long(update: Update, text: str):
     text = text or ""
@@ -307,6 +307,30 @@ CATEGORY_RULES = [
      r")\b", "Acabamento"),
 
     (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
+
+    # CONSUMÍVEIS
+    (r"\b("
+     r"parafuso|parafusos|prego|pregos|bucha|buchas|rebite|rebites|arruela|arruelas|porca|porcas|"
+     r"solda|eletrodo|eletrodos|arame\s*solda|"
+     r"disco|discos|disco\s*corte|disco\s*flap|"
+     r"lixa|lixas|"
+     r"abra[cç]adeira|enforca\s*gato|hellermann|"
+     r"silicone|cola|super\s*bonder|"
+     r"espuma\s*expansiva|vedante"
+     r")\b", "Consumíveis"),
+
+    # SST
+    (r"\b("
+     r"analgesico|analg[eé]sico|dipirona|ibuprofeno|paracetamol|remedio|rem[eé]dios?|"
+     r"pomada|curativo|gaze|esparadrapo|bandagem|antisseptico|antiss[eé]ptico|"
+     r"protetor\s*solar|"
+     r"luva|luvas|"
+     r"oculos|[óo]culos|oculos\s*prote[cç][aã]o|[óo]culos\s*prote[cç][aã]o|"
+     r"capacete|protetor\s*auricular|"
+     r"mascara|m[aá]scara|respirador|"
+     r"bota|botina"
+     r")\b", "SST"),
+
     (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
     (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
 
@@ -339,7 +363,9 @@ QUERY_INTENT_RE = re.compile(
     r"quanto\s+entrou|"
     r"receitas?|entradas?|"
     r"total\s+recebido|"
-    r"saldo(\s+atual)?"
+    r"saldo(\s+atual)?|"
+    r"lucro|margem|dre|"
+    r"ranking"
     r")\b",
     re.I
 )
@@ -357,7 +383,10 @@ COMPANY_BALANCE_RE = re.compile(
     re.I
 )
 
-# -------------------- NOVO: detectar “período explícito” --------------------
+PROFIT_INTENT_RE = re.compile(r"\b(lucro|margem|dre)\b", re.I)
+RANKING_INTENT_RE = re.compile(r"\b(ranking)\b", re.I)
+
+# -------------------- detectar “período explícito” --------------------
 PERIOD_MARKERS = [
     "este mes", "essa semana", "semana passada", "mes passado",
     "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
@@ -494,7 +523,7 @@ def guess_cc(txt: str) -> str | None:
     if m:
         nome = m.group(1).strip()
         nome = re.split(
-            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato)\b",
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato|lucro|margem|dre|ranking)\b",
             nome
         )[0].strip()
         if nome:
@@ -505,7 +534,7 @@ def guess_cc(txt: str) -> str | None:
         tipo = m.group(1)
         nome = m.group(2).strip()
         nome = re.split(
-            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato)\b",
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato|lucro|margem|dre|ranking)\b",
             nome
         )[0].strip()
         if nome:
@@ -591,7 +620,7 @@ def _last_day_of_week(d: date):
 def parse_period_pt(text: str):
     """
     Retorna (start_iso, end_iso, label)
-    ✅ entende mês por nome e períodos relativos
+    entende mês por nome e períodos relativos
     """
     low = _norm(text)
     today = date.today()
@@ -714,7 +743,6 @@ def guess_cc_filter(text: str):
 def is_company_balance_request(text: str) -> bool:
     return bool(COMPANY_BALANCE_RE.search(text or ""))
 
-# -------------------- NOVO: detectar tipo desejado --------------------
 EXPENSE_HINT_RE = re.compile(r"\b(despesa|despesas|gasto|gastei|paguei|comprei|saida|saída)\b", re.I)
 
 def is_income_query(text: str):
@@ -744,13 +772,11 @@ def detect_type_filter(text: str) -> str | None:
         return "income"
     if EXPENSE_HINT_RE.search(t):
         return "expense"
-    # Se for “extrato”, default é ambos
     if "extrato" in t:
         return None
-    # Se a pessoa falou “lista”/“lançamentos” sem dizer tipo, eu considero ambos
     if re.search(r"\b(lista|lan[cç]amentos?)\b", t):
         return None
-    return "expense"  # fallback antigo (pra manter comportamento em “quanto gastei” sem dizer)
+    return "expense"
 
 def is_report_intent(text: str):
     return bool(QUERY_INTENT_RE.search(text or ""))
@@ -765,6 +791,12 @@ def is_summary_request(text: str):
 def is_list_request(text: str):
     t = _norm(text or "")
     return bool(re.search(r"\b(lista|detalha|detalhar|itens?|lan[cç]amentos?|extrato)\b", t))
+
+def is_profit_request(text: str):
+    return bool(PROFIT_INTENT_RE.search(text or ""))
+
+def is_ranking_request(text: str):
+    return bool(RANKING_INTENT_RE.search(text or ""))
 
 # =====================================================================================
 #                               CC STATE + pending + undo cache
@@ -804,7 +836,7 @@ def _get_last_entry_id_from_db(tg_user_id: int) -> int | None:
             except Exception:
                 return None
     except Exception:
-        return None
+        pass
     return None
 
 def _set_last_entry_id_to_db(tg_user_id: int, entry_id: int | None):
@@ -1251,7 +1283,6 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /desfazer: {type(e).__name__}: {e}")
 
-# -------------------- NOVO: helpers de relatório --------------------
 def _fmt_ranked(d: dict[str, float], limit: int | None = None) -> str:
     items = sorted(d.items(), key=lambda x: x[1], reverse=True)
     if limit:
@@ -1269,7 +1300,6 @@ async def run_query_and_reply(update: Update, text: str):
     paid = guess_paid_filter(text)
     cat = guess_category_filter(text)
 
-    # ✅ Se tem CC e não tem período explícito -> todo o período
     if cc_code and not has_explicit_period(text):
         start, end, label = all_time_period_label()
     else:
@@ -1336,15 +1366,13 @@ async def run_list_entries_and_reply(update: Update, text: str):
     cc_code = guess_cc_filter(text)
     cat = guess_category_filter(text)
 
-    # ✅ Se tem CC e não tem período explícito -> todo o período
     if cc_code and not has_explicit_period(text):
         start, end, label = all_time_period_label()
     else:
         start, end, label = parse_period_pt(text)
 
-    typ = detect_type_filter(text)  # income / expense / None (ambos)
+    typ = detect_type_filter(text)
 
-    # ✅ Limites melhorados
     low = _norm(text or "")
     limit = 2000 if re.search(r"\b(completo|tudo|inteiro)\b", low) else 200
 
@@ -1436,10 +1464,8 @@ async def run_balance_and_reply(update: Update, text: str):
         return
     account_id = user_row.get("account_id") or get_default_account_id()
 
-    # Opção B: saldo da empresa quando pedir "saldo da empresa/geral"
     cc_code = None if is_company_balance_request(text) else guess_cc_filter(text)
 
-    # ✅ Se tem CC e não tem período explícito -> todo o período
     if cc_code and not has_explicit_period(text):
         start, end, label = all_time_period_label()
     else:
@@ -1474,6 +1500,144 @@ async def run_balance_and_reply(update: Update, text: str):
     )
     await update.message.reply_text(msg)
 
+async def run_profit_and_reply(update: Update, text: str):
+    user_row = _get_user_row(update.effective_user.id)
+    if not user_row or not user_row.get("is_active"):
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+
+    account_id = user_row.get("account_id") or get_default_account_id()
+
+    cc_code = guess_cc_filter(text)
+    if not cc_code:
+        await update.message.reply_text("Informe a obra ou container. Ex: lucro do container do Thiago")
+        return
+
+    if cc_code and not has_explicit_period(text):
+        start, end, label = all_time_period_label()
+    else:
+        start, end, label = parse_period_pt(text)
+
+    cc_res = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
+    cc_rows = get_or_none(cc_res) or []
+    if not cc_rows:
+        await update.message.reply_text(f"Sem centro de custo cadastrado para {cc_code}")
+        return
+
+    cc_id = cc_rows[0]["id"]
+
+    rows = get_or_none(
+        sb.table("entries")
+        .select("amount,type,category_id")
+        .eq("account_id", account_id)
+        .eq("cost_center_id", cc_id)
+        .gte("entry_date", start).lt("entry_date", end)
+        .execute()
+    ) or []
+
+    if not rows:
+        await update.message.reply_text(f"Sem lançamentos para {cc_code} em {label}.")
+        return
+
+    cats_rows = get_or_none(
+        sb.table("categories").select("id,name").eq("account_id", account_id).execute()
+    ) or []
+    cats_map = {r["id"]: r["name"] for r in cats_rows}
+
+    receitas = 0.0
+    despesas = 0.0
+    cats = {}
+
+    for r in rows:
+        val = float(r["amount"])
+
+        if r["type"] == "income":
+            receitas += val
+        else:
+            despesas += val
+            cat = cats_map.get(r.get("category_id"), "Outros")
+            cats[cat] = cats.get(cat, 0.0) + val
+
+    lucro = receitas - despesas
+    margem = (lucro / receitas * 100.0) if receitas > 0 else 0.0
+
+    msg = f"📊 DRE — {cc_code}\n\n"
+    msg += "Receita total\n"
+    msg += f"{moeda_fmt(receitas)}\n\n"
+
+    msg += "Despesas\n"
+    for k, v in sorted(cats.items(), key=lambda x: -x[1]):
+        msg += f"{k}: {moeda_fmt(v)}\n"
+
+    msg += "\nTotal despesas\n"
+    msg += f"{moeda_fmt(despesas)}\n\n"
+
+    msg += "💰 Lucro\n"
+    msg += f"{moeda_fmt(lucro)}\n\n"
+
+    msg += "Margem\n"
+    msg += f"{margem:.1f}%\n\n"
+
+    msg += "📌 Ranking de gastos\n"
+    pos = 1
+    for k, v in sorted(cats.items(), key=lambda x: -x[1]):
+        msg += f"{pos}️⃣ {k}\n{moeda_fmt(v)}\n\n"
+        pos += 1
+        if pos > 10:
+            break
+
+    await _send_long(update, msg.strip())
+
+async def run_ranking_and_reply(update: Update, text: str):
+    user_row = _get_user_row(update.effective_user.id)
+    if not user_row or not user_row.get("is_active"):
+        await update.message.reply_text("Usuário não autorizado.")
+        return
+
+    account_id = user_row.get("account_id") or get_default_account_id()
+
+    if has_explicit_period(text):
+        start, end, label = parse_period_pt(text)
+    else:
+        start, end, label = all_time_period_label()
+
+    rows = get_or_none(
+        sb.table("entries")
+        .select("amount,category_id")
+        .eq("account_id", account_id)
+        .eq("type", "expense")
+        .gte("entry_date", start).lt("entry_date", end)
+        .execute()
+    ) or []
+
+    if not rows:
+        await update.message.reply_text("Sem despesas registradas.")
+        return
+
+    cats_rows = get_or_none(
+        sb.table("categories").select("id,name").eq("account_id", account_id).execute()
+    ) or []
+    cats_map = {r["id"]: r["name"] for r in cats_rows}
+
+    cats = {}
+
+    for r in rows:
+        cat = cats_map.get(r.get("category_id"), "Outros")
+        cats[cat] = cats.get(cat, 0.0) + float(r["amount"])
+
+    ordered = sorted(cats.items(), key=lambda x: -x[1])
+
+    msg = f"📊 Ranking de gastos — {label}\n\n"
+
+    pos = 1
+    for cat, val in ordered:
+        msg += f"{pos}️⃣ {cat}\n{moeda_fmt(val)}\n\n"
+        pos += 1
+        if pos > 10:
+            break
+
+    await _send_long(update, msg.strip())
+
 async def run_cc_full_summary(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
@@ -1486,7 +1650,6 @@ async def run_cc_full_summary(update: Update, text: str):
         await update.message.reply_text("Me diz qual centro de custo. Ex: 'resumo da obra do Rodrigo' ou 'resumo do container do Thiago'.")
         return
 
-    # ✅ Se não tem período explícito -> todo o período
     if not has_explicit_period(text):
         start, end, label = all_time_period_label()
     else:
@@ -1551,7 +1714,6 @@ async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None =
         return
     account_id = user_row.get("account_id") or get_default_account_id()
 
-    # ✅ Se não passar período ou passar texto sem período explícito -> todo o período
     base_text = period_text or ""
     if not base_text or not has_explicit_period(base_text):
         start, end, label = all_time_period_label()
@@ -1663,7 +1825,18 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             if applied:
                 return
 
-        # ✅ Lista/extrato tem prioridade
+        low_text = _norm(user_text)
+
+        # DRE / LUCRO / MARGEM
+        if "lucro" in low_text or "margem" in low_text or "dre" in low_text:
+            await run_profit_and_reply(update, user_text)
+            return
+
+        # RANKING
+        if "ranking" in low_text:
+            await run_ranking_and_reply(update, user_text)
+            return
+
         if is_list_request(user_text) and (is_report_intent(user_text) or guess_cc_filter(user_text) or is_income_query(user_text) or "extrato" in _norm(user_text)):
             await run_list_entries_and_reply(update, user_text)
             return
@@ -1731,6 +1904,11 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "• extrato do container do Thiago completo\n"
                 "• saldo da empresa este mês\n"
                 "• resumo do container do Thiago\n"
+                "• lucro do container do Thiago\n"
+                "• margem da obra do Rodrigo\n"
+                "• dre do container da Ellen\n"
+                "• ranking de gastos\n"
+                "• ranking de gastos em fevereiro\n"
                 "• me dá uma lista de tudo que eu gastei na obra do João em fevereiro\n"
                 "• quanto já recebi na obra do João?\n"
                 "• /extrato_obra João fevereiro\n"
@@ -1917,7 +2095,7 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if split_idx is None:
         name = raw
-        period_txt = ""  # ✅ agora vai virar “todo o período”
+        period_txt = ""
     else:
         name = raw[:split_idx].strip()
         period_txt = raw[split_idx:].strip()
@@ -1946,7 +2124,12 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• \"saldo do container do Thiago\" → pega **todo o período** (se não disser mês)\n"
         "• \"saldo do container do Thiago em fevereiro\" → pega fevereiro\n"
         "• \"extrato do container do Thiago\" → lista + resumo (receitas e despesas)\n"
-        "• \"extrato completo do container do Thiago\" → até 2000 itens\n\n"
+        "• \"extrato completo do container do Thiago\" → até 2000 itens\n"
+        "• \"lucro do container do Thiago\"\n"
+        "• \"margem da obra do Rodrigo\"\n"
+        "• \"dre do container da Ellen\"\n"
+        "• \"ranking de gastos\"\n"
+        "• \"ranking de gastos em fevereiro\"\n\n"
         "✅ **Comandos**\n"
         "• /start — cadastra/mostra teu id\n"
         "• /autorizar <id> — (owner) autoriza usuário\n"
