@@ -33,10 +33,32 @@ oa_client = OpenAI(
 # -------------- ENV ----------------
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-if not (TOKEN and SUPABASE_URL and SUPABASE_KEY):
-    raise RuntimeError("Faltam variáveis de ambiente: TELEGRAM_TOKEN, TELEGRAM_TOKEN, SUPABASE_URL, SUPABASE_KEY")
+# Preferência: usar a chave secreta do backend
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+# Compatibilidade com teu nome antigo de variável no Render
+SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or os.getenv("SUPABASE_KEY")
+
+if not TOKEN:
+    raise RuntimeError("Falta a variável de ambiente: TELEGRAM_TOKEN")
+
+if not SUPABASE_URL:
+    raise RuntimeError("Falta a variável de ambiente: SUPABASE_URL")
+
+if not SUPABASE_KEY:
+    raise RuntimeError(
+        "Falta a variável de ambiente do Supabase. "
+        "Defina SUPABASE_SERVICE_ROLE_KEY "
+        "(recomendado) ou SUPABASE_KEY."
+    )
+
+if SUPABASE_KEY.startswith("sb_publishable_"):
+    raise RuntimeError(
+        "A chave informada é publishable/public. "
+        "Para o Boris no backend, use a SECRET KEY do Supabase "
+        "(sb_secret_...) em SUPABASE_SERVICE_ROLE_KEY."
+    )
 
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -1336,9 +1358,12 @@ async def run_query_and_reply(update: Update, text: str):
     saldo = receitas - despesas
 
     filtros = []
-    if cc_code: filtros.append(cc_code)
-    if cat: filtros.append(cat)
-    if paid: filtros.append(paid.title())
+    if cc_code:
+        filtros.append(cc_code)
+    if cat:
+        filtros.append(cat)
+    if paid:
+        filtros.append(paid.title())
     filtros_txt = f" | Filtros: {', '.join(filtros)}" if filtros else ""
 
     if typ == "income":
@@ -1425,11 +1450,9 @@ async def run_list_entries_and_reply(update: Update, text: str):
         if r.get("type") == "income":
             by_cat_inc[cat_name] += v
             icon = "✅"
-            typ_label = "Receita"
         else:
             by_cat_exp[cat_name] += v
             icon = "⛔"
-            typ_label = "Despesa"
 
         lines.append(f"• {dt} {icon} {moeda_fmt(v)} — {cat_name} — {cc_name}\n  {_clip(desc, 90)}")
 
@@ -1806,8 +1829,10 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     label = entry_label(etype)
 
                     extras = []
-                    if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
-                    if r.get("entry_date"): extras.append(f"🗓️ {data_fmt_out(r['entry_date'])}")
+                    if r.get("paid_via"):
+                        extras.append(f"💳 {r['paid_via']}")
+                    if r.get("entry_date"):
+                        extras.append(f"🗓️ {data_fmt_out(r['entry_date'])}")
                     tail = ("\n" + " • ".join(extras)) if extras else ""
 
                     await update.message.reply_text(
@@ -1879,9 +1904,12 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             label = entry_label(etype)
 
             extras = []
-            if r.get("entry_date"): extras.append(f"🗓️ {data_fmt_out(r['entry_date'])}")
-            if r.get("paid_via"): extras.append(f"💳 {r['paid_via']}")
-            if r.get("used_last_cc") and r.get("cc"): extras.append(f"📌 CC assumido: {r['cc']}")
+            if r.get("entry_date"):
+                extras.append(f"🗓️ {data_fmt_out(r['entry_date'])}")
+            if r.get("paid_via"):
+                extras.append(f"💳 {r['paid_via']}")
+            if r.get("used_last_cc") and r.get("cc"):
+                extras.append(f"📌 CC assumido: {r['cc']}")
             tail = ("\n" + " • ".join(extras)) if extras else ""
 
             hint = ""
@@ -2198,80 +2226,4 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_out = (getattr(resp, "text", "") or "").strip()
         finally:
             try:
-                os.remove(local_path)
-            except Exception:
-                pass
-
-        if not text_out:
-            await update.message.reply_text("Não consegui entender o áudio.")
-            return
-
-        await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
-        await process_user_text(update, context, text_out)
-
-    except Exception as e:
-        msg = f"💥 Erro no handle_audio: {type(e).__name__}: {e}"
-        if "timed out" in str(e).lower() or "timeout" in str(e).lower():
-            msg += "\n\nDica: manda de novo um áudio mais curto (até ~10s) ou manda em texto."
-        await update.message.reply_text(msg)
-
-# =====================================================================================
-#                               TELEGRAM APP
-# =====================================================================================
-
-tg_app: Application = ApplicationBuilder().token(TOKEN).build()
-
-tg_app.add_handler(CommandHandler("start", cmd_start))
-tg_app.add_handler(CommandHandler("autorizar", cmd_autorizar))
-tg_app.add_handler(CommandHandler("ajuda", cmd_ajuda))
-tg_app.add_handler(CommandHandler("obra", cmd_obra))
-tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
-tg_app.add_handler(CommandHandler("receita", cmd_receita))
-tg_app.add_handler(CommandHandler("saldo", cmd_saldo))
-tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
-tg_app.add_handler(CommandHandler("resumo", cmd_resumo))
-tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer))
-tg_app.add_handler(CommandHandler("categorias", cmd_categorias))
-tg_app.add_handler(CommandHandler("extrato_obra", cmd_extrato_obra))
-
-tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
-tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
-
-@app.on_event("startup")
-async def on_startup():
-    global _KEEPALIVE_TASK
-    await tg_app.initialize()
-    await tg_app.start()
-    if _KEEPALIVE_TASK is None:
-        _KEEPALIVE_TASK = asyncio.create_task(_daily_keepalive_loop())
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    try:
-        await tg_app.stop()
-        await tg_app.shutdown()
-    finally:
-        pass
-
-# =====================================================================================
-#                               FASTAPI ENDPOINTS
-# =====================================================================================
-
-class TgUpdate(BaseModel):
-    update_id: int | None = None
-
-@app.post("/webhook")
-async def webhook(req: Request):
-    data = await req.json()
-    update = Update.de_json(data, tg_app.bot)
-    await tg_app.process_update(update)
-    return {"ok": True}
-
-@app.get("/ping")
-async def ping():
-    ok = await _supabase_keepalive_once()
-    return {"ok": True, "supabase": "ok" if ok else "fail"}
-
-@app.get("/")
-def alive():
-    return {"boris": "ok"}
+                os.remove(local
