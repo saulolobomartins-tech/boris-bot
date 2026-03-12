@@ -23,7 +23,6 @@ from supabase import create_client, Client
 from openai import OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Timeout + retries (ajuda nos "TimedOut")
 oa_client = OpenAI(
     api_key=OPENAI_API_KEY,
     timeout=35.0,
@@ -33,11 +32,7 @@ oa_client = OpenAI(
 # -------------- ENV ----------------
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-
-# Preferência: usar a chave secreta do backend
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-# Compatibilidade com teu nome antigo de variável no Render
 SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or os.getenv("SUPABASE_KEY")
 
 if not TOKEN:
@@ -49,8 +44,7 @@ if not SUPABASE_URL:
 if not SUPABASE_KEY:
     raise RuntimeError(
         "Falta a variável de ambiente do Supabase. "
-        "Defina SUPABASE_SERVICE_ROLE_KEY "
-        "(recomendado) ou SUPABASE_KEY."
+        "Defina SUPABASE_SERVICE_ROLE_KEY (recomendado) ou SUPABASE_KEY."
     )
 
 if SUPABASE_KEY.startswith("sb_publishable_"):
@@ -72,10 +66,6 @@ app = FastAPI()
 _KEEPALIVE_TASK = None
 
 async def _supabase_keepalive_once():
-    """
-    Ping leve pra manter o projeto Supabase acordado.
-    Não depende de endpoint externo; consulta simples no banco.
-    """
     try:
         sb.table("accounts").select("id").limit(1).execute()
         return True
@@ -83,10 +73,6 @@ async def _supabase_keepalive_once():
         return False
 
 async def _daily_keepalive_loop():
-    """
-    Loop simples: roda 1x por dia.
-    Obs: Se teu serviço tiver múltiplos workers/replicas, pode rodar mais de 1x/dia. É ok pro objetivo.
-    """
     await asyncio.sleep(10)
     while True:
         try:
@@ -131,10 +117,10 @@ def _clip(s: str, n: int = 40) -> str:
     s = (s or "").strip()
     if len(s) <= n:
         return s
-    return s[:n-1] + "…"
+    return s[:n - 1] + "…"
 
-# -------------------- envio “safe” pro Telegram (quebra mensagens longas) --------------------
-TG_SAFE_CHUNK = 3600  # margem segura (limite real ~4096)
+TG_SAFE_CHUNK = 3600
+
 async def _send_long(update: Update, text: str):
     text = text or ""
     if len(text) <= TG_SAFE_CHUNK:
@@ -260,10 +246,8 @@ CATEGORY_RULES = [
      r")\b", "Mão de Obra"),
 
     (r"\b("
-     r"lazer|"
-     r"bar|cerveja|churrasco|restaurante|pizza|cinema|show|balada|happy\s*hour|"
-     r"bebida(s)?|"
-     r"drink(s)?"
+     r"lazer|bar|cerveja|churrasco|restaurante|pizza|cinema|show|balada|happy\s*hour|"
+     r"bebida(s)?|drink(s)?"
      r")\b", "Lazer"),
 
     (r"\b("
@@ -278,8 +262,7 @@ CATEGORY_RULES = [
      r"peca|pecas|pe[cç]a|pe[cç]as|"
      r"oficina|"
      r"lavagem|lava\s*jato|lava\s+a\s*jato|lava-jato|"
-     r"etios|"
-     r"tcross|t-cross|t\s*cross"
+     r"etios|tcross|t-cross|t\s*cross"
      r")\b", "Logística"),
 
     (r"\b(refriger(a|aç)[aã]o|ar\s*condicionado|split|vrf|central\s+de\s+ar|tubula(c|ç)[aã]o|linha\s+de\s+cobre|cobre\s+para\s+ar|gas\s+refrigerante|flange|vacuometro|manifold)\b", "Refrigeração"),
@@ -287,77 +270,21 @@ CATEGORY_RULES = [
     (r"\b(eletric(a|o)?|fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric)\b", "Elétrico"),
     (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|pvc\b|joelho|te\b|luva\b|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba|sifao|sifão)\b", "Hidráulico"),
 
-    (r"\b("
-     r"revestimento(s)?|"
-     r"forro(\s*pvc)?|"
-     r"dry\s*wall|drywall|"
-     r"gesso(\s+acartonado)?"
-     r")\b", "Revestimentos"),
-
+    (r"\b(revestimento(s)?|forro(\s*pvc)?|dry\s*wall|drywall|gesso(\s+acartonado)?)\b", "Revestimentos"),
     (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray|textura|zarcao|zarc[aã]o)\b", "Pintura"),
-
     (r"\b(estrutura|fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento|perfil|perfis|metalon|metalons)\b", "Estrutura/Alvenaria"),
-
-    (r"\b("
-     r"porta(s)?|"
-     r"janela(s)?|janela\s+de\s+vidro|"
-     r"vidro|"
-     r"esquadria|"
-     r"aluminio|alum[ií]nio|"
-     r"fechadur(a|as)|fechadura(s)?|"
-     r"dobradi[cç]a(s)?|"
-     r"trinco|cadeado|"
-     r"temperado|kit\s*porta"
-     r")\b", "Esquadrias/Vidro"),
-
+    (r"\b(porta(s)?|janela(s)?|janela\s+de\s+vidro|vidro|esquadria|aluminio|alum[ií]nio|fechadur(a|as)|fechadura(s)?|dobradi[cç]a(s)?|trinco|cadeado|temperado|kit\s*porta)\b", "Esquadrias/Vidro"),
     (r"\b(telha|calha|rufo|cumeeira|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
-
-    (r"\b("
-     r"acabamento|"
-     r"piso|porcelanato|ceramica|cerâmica|"
-     r"rodape|rodapé|"
-     r"azulejo|pastilha|"
-     r"rejunte|argamassa\s*colante|"
-     r"granito|marmore|mármore|bancada|"
-     r"silicone|vedacao|vedação|"
-     r"massa\s*acrilica|massa\s*acrílica|massa\s*fina|"
-     r"box\b|espelho|"
-     r"lou(c|ç)a(s)?|metais|"
-     r"vaso\s+sanitario|vaso\s+sanitário|"
-     r"cuba\b|pia\b|"
-     r"acabamento\s+de\s+tomada|espelho\s+de\s+tomada"
-     r")\b", "Acabamento"),
-
+    (r"\b(acabamento|piso|porcelanato|ceramica|cerâmica|rodape|rodapé|azulejo|pastilha|rejunte|argamassa\s*colante|granito|marmore|mármore|bancada|silicone|vedacao|vedação|massa\s*acrilica|massa\s*acrílica|massa\s*fina|box\b|espelho|lou(c|ç)a(s)?|metais|vaso\s+sanitario|vaso\s+sanitário|cuba\b|pia\b|acabamento\s+de\s+tomada|espelho\s+de\s+tomada)\b", "Acabamento"),
     (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
 
-    # CONSUMÍVEIS
-    (r"\b("
-     r"parafuso|parafusos|prego|pregos|bucha|buchas|rebite|rebites|arruela|arruelas|porca|porcas|"
-     r"solda|eletrodo|eletrodos|arame\s*solda|"
-     r"disco|discos|disco\s*corte|disco\s*flap|"
-     r"lixa|lixas|"
-     r"abra[cç]adeira|enforca\s*gato|hellermann|"
-     r"silicone|cola|super\s*bonder|"
-     r"espuma\s*expansiva|vedante"
-     r")\b", "Consumíveis"),
+    (r"\b(parafuso|parafusos|prego|pregos|bucha|buchas|rebite|rebites|arruela|arruelas|porca|porcas|solda|eletrodo|eletrodos|arame\s*solda|disco|discos|disco\s*corte|disco\s*flap|lixa|lixas|abra[cç]adeira|enforca\s*gato|hellermann|silicone|cola|super\s*bonder|espuma\s*expansiva|vedante)\b", "Consumíveis"),
 
-    # SST
-    (r"\b("
-     r"analgesico|analg[eé]sico|dipirona|ibuprofeno|paracetamol|remedio|rem[eé]dios?|"
-     r"pomada|curativo|gaze|esparadrapo|bandagem|antisseptico|antiss[eé]ptico|"
-     r"protetor\s*solar|"
-     r"luva|luvas|"
-     r"oculos|[óo]culos|oculos\s*prote[cç][aã]o|[óo]culos\s*prote[cç][aã]o|"
-     r"capacete|protetor\s*auricular|"
-     r"mascara|m[aá]scara|respirador|"
-     r"bota|botina"
-     r")\b", "SST"),
+    (r"\b(analgesico|analg[eé]sico|dipirona|ibuprofeno|paracetamol|remedio|rem[eé]dios?|pomada|curativo|gaze|esparadrapo|bandagem|antisseptico|antiss[eé]ptico|protetor\s*solar|luva|luvas|oculos|[óo]culos|oculos\s*prote[cç][aã]o|[óo]culos\s*prote[cç][aã]o|capacete|protetor\s*auricular|mascara|m[aá]scara|respirador|bota|botina)\b", "SST"),
 
     (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
     (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
-
     (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|plataforma|guindaste)\b", "Equipamentos"),
-
     (r"\b(trafego|tr[aá]fego|ads|google|meta|facebook|instagram|impulsionamento|an[uú]ncio)\b", "Marketing"),
     (r"\b(aluguel|internet|energia|conta\s*de\s*luz|conta\s*de\s*agua|conta\s*de\s*água|telefone|contabilidade|escritorio|escritório)\b", "Custos Fixos"),
     (r"\b(taxa|emolumento|cartorio|cartório|crea|art|multa|juros|tarifa|banco|ted\b|boleto|iof)\b", "Taxas/Financeiro"),
@@ -366,11 +293,11 @@ CATEGORY_RULES = [
 DEFAULT_CATEGORY = "Outros"
 
 PAYMENT_SYNONYMS = {
-    "PIX":      r"\bpix\b|\bfiz\s+um\s+pix\b|\bmandei\s+um\s+pix\b|\bchave\s+pix\b",
-    "CREDITO":  r"\bcr[eé]dito\b|\bno\s+cart[aã]o\s+de\s+cr[eé]dito\b|\bpassei\s+no\s+cr[eé]dito\b|\bpassei\s+no\s+cart[aã]o\b",
-    "DEBITO":   r"\bd[eé]bito\b|\bno\s+cart[aã]o\s+de\s+d[eé]bito\b|\bpassei\s+no\s+d[eé]bito\b",
+    "PIX": r"\bpix\b|\bfiz\s+um\s+pix\b|\bmandei\s+um\s+pix\b|\bchave\s+pix\b",
+    "CREDITO": r"\bcr[eé]dito\b|\bno\s+cart[aã]o\s+de\s+cr[eé]dito\b|\bpassei\s+no\s+cr[eé]dito\b|\bpassei\s+no\s+cart[aã]o\b",
+    "DEBITO": r"\bd[eé]bito\b|\bno\s+cart[aã]o\s+de\s+d[eé]bito\b|\bpassei\s+no\s+d[eé]bito\b",
     "DINHEIRO": r"\bdinheiro\b|\bem\s+esp[eé]cie\b|\bcash\b",
-    "VALE":     r"\bvale\b|\badiantamento\b",
+    "VALE": r"\bvale\b|\badiantamento\b",
 }
 
 QUERY_INTENT_RE = re.compile(
@@ -408,7 +335,6 @@ COMPANY_BALANCE_RE = re.compile(
 PROFIT_INTENT_RE = re.compile(r"\b(lucro|margem|dre)\b", re.I)
 RANKING_INTENT_RE = re.compile(r"\b(ranking)\b", re.I)
 
-# -------------------- detectar “período explícito” --------------------
 PERIOD_MARKERS = [
     "este mes", "essa semana", "semana passada", "mes passado",
     "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
@@ -452,7 +378,7 @@ def money_from_text(txt: str):
 
         for m in candidates:
             after = s_wo_dates[m.end(): m.end() + 12]
-            before = s_wo_dates[max(0, m.start()-6): m.start()]
+            before = s_wo_dates[max(0, m.start() - 6): m.start()]
             if re.search(r"\b(reais|real)\b", after) or "r$" in before:
                 try:
                     return round(to_float(m.group(0)), 2)
@@ -595,10 +521,14 @@ def parse_date_pt(txt: str) -> str | None:
     t = _norm(txt)
     today = date.today()
 
-    if "hoje" in t: return today.isoformat()
-    if "ontem" in t: return (today - timedelta(days=1)).isoformat()
-    if "anteontem" in t: return (today - timedelta(days=2)).isoformat()
-    if "amanha" in t: return (today + timedelta(days=1)).isoformat()
+    if "hoje" in t:
+        return today.isoformat()
+    if "ontem" in t:
+        return (today - timedelta(days=1)).isoformat()
+    if "anteontem" in t:
+        return (today - timedelta(days=2)).isoformat()
+    if "amanha" in t:
+        return (today + timedelta(days=1)).isoformat()
 
     m = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b", t)
     if m:
@@ -640,10 +570,6 @@ def _last_day_of_week(d: date):
     return _first_day_of_week(d) + timedelta(days=7)
 
 def parse_period_pt(text: str):
-    """
-    Retorna (start_iso, end_iso, label)
-    entende mês por nome e períodos relativos
-    """
     low = _norm(text)
     today = date.today()
 
@@ -682,10 +608,7 @@ def parse_period_pt(text: str):
         year = int(mmo.group(2)) if mmo.group(2) else today.year
         if mon:
             s = date(year, mon, 1)
-            if mon == 12:
-                e = date(year + 1, 1, 1)
-            else:
-                e = date(year, mon + 1, 1)
+            e = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
             label = f"{mon_name}{' ' + str(year) if mmo.group(2) else ''}"
             return s.isoformat(), e.isoformat(), label
 
@@ -770,25 +693,11 @@ EXPENSE_HINT_RE = re.compile(r"\b(despesa|despesas|gasto|gastei|paguei|comprei|s
 def is_income_query(text: str):
     t = _norm(text or "")
     return bool(re.search(
-        r"\b("
-        r"entrou|entrada(s)?|"
-        r"recebi|receber|recebido|recebida|"
-        r"receita(s)?|"
-        r"pagaram|pagamento(s)?|"
-        r"quanto\s+(ja\s+)?recebi|"
-        r"quanto\s+entrou|"
-        r"total\s+recebido|"
-        r"pix\s+recebid[oa]"
-        r")\b", t, re.I
+        r"\b(entrou|entrada(s)?|recebi|receber|recebido|recebida|receita(s)?|pagaram|pagamento(s)?|quanto\s+(ja\s+)?recebi|quanto\s+entrou|total\s+recebido|pix\s+recebid[oa])\b",
+        t, re.I
     ))
 
 def detect_type_filter(text: str) -> str | None:
-    """
-    Retorna:
-    - "income" se a frase pede receita
-    - "expense" se a frase pede despesa
-    - None se for extrato (quer os dois) ou não ficou claro
-    """
     t = _norm(text or "")
     if is_income_query(t):
         return "income"
@@ -883,18 +792,7 @@ def is_correction_intent(text: str) -> bool:
             return True
 
     return bool(re.search(
-        r"\b("
-        r"corrig(e|ir|e ai)|"
-        r"ajusta(r|a)|"
-        r"editar|edita|"
-        r"troca(r)?|"
-        r"muda(r)?|"
-        r"mudar\b|"
-        r"nao\s+e|não\s+é|"
-        r"na\s+verdade|"
-        r"o\s+certo\s+e|"
-        r"era\s+.*\s+mas\s+e"
-        r")\b",
+        r"\b(corrig(e|ir|e ai)|ajusta(r|a)|editar|edita|troca(r)?|muda(r)?|mudar\b|nao\s+e|não\s+é|na\s+verdade|o\s+certo\s+e|era\s+.*\s+mas\s+e)\b",
         t_norm
     ))
 
@@ -1039,7 +937,7 @@ async def try_apply_correction(update: Update, text: str) -> bool:
     if targets.get("paid_via"):
         changed.append(f"Pagamento → {targets['paid_via']}")
     if targets.get("type"):
-        changed.append(f"Tipo → {'Receita' if targets['type']=='income' else 'Despesa'}")
+        changed.append(f"Tipo → {'Receita' if targets['type'] == 'income' else 'Despesa'}")
 
     await update.message.reply_text("✅ Ajustado: " + " | ".join(changed))
 
@@ -1181,9 +1079,7 @@ async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         resp = sb.table("entries").select(
             "amount,category_id,cost_center_id,type"
-        ).eq("account_id", account_id) \
-         .gte("entry_date", start).lt("entry_date", end) \
-         .eq("type", "expense").execute()
+        ).eq("account_id", account_id).gte("entry_date", start).lt("entry_date", end).eq("type", "expense").execute()
 
         rows = get_or_none(resp) or []
         if not rows:
@@ -1191,12 +1087,12 @@ async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
-        ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
+        ccs_rows = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
         cats = {r["id"]: r["name"] for r in cats_rows}
-        ccs  = {r["id"]: r["code"] for r in ccs_rows}
+        ccs = {r["id"]: r["code"] for r in ccs_rows}
 
         by_cat = defaultdict(float)
-        by_cc  = defaultdict(float)
+        by_cc = defaultdict(float)
         total = 0.0
         for r in rows:
             v = float(r["amount"])
@@ -1244,8 +1140,7 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_last_entry_id = _get_last_entry_id_from_db(tg_uid)
         if db_last_entry_id:
             try:
-                r = sb.table("entries").select("id,amount,type,entry_date,account_id,created_by") \
-                    .eq("id", db_last_entry_id).limit(1).execute()
+                r = sb.table("entries").select("id,amount,type,entry_date,account_id,created_by").eq("id", db_last_entry_id).limit(1).execute()
                 rows = get_or_none(r) or []
                 if rows:
                     row = rows[0]
@@ -1260,11 +1155,7 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 entry_id = meta["id"]
 
         if not entry_id:
-            r = sb.table("entries").select("id,amount,type,entry_date") \
-                .eq("account_id", account_id) \
-                .eq("created_by", user_id) \
-                .order("created_at", desc=True) \
-                .limit(1).execute()
+            r = sb.table("entries").select("id,amount,type,entry_date").eq("account_id", account_id).eq("created_by", user_id).order("created_at", desc=True).limit(1).execute()
             rows = get_or_none(r) or []
             if rows:
                 entry_id = rows[0]["id"]
@@ -1329,9 +1220,7 @@ async def run_query_and_reply(update: Update, text: str):
 
     typ = detect_type_filter(text)
 
-    q = sb.table("entries").select("amount,category_id,cost_center_id,paid_via,type,entry_date") \
-        .eq("account_id", account_id) \
-        .gte("entry_date", start).lt("entry_date", end)
+    q = sb.table("entries").select("amount,category_id,cost_center_id,paid_via,type,entry_date").eq("account_id", account_id).gte("entry_date", start).lt("entry_date", end)
 
     if paid:
         q = q.eq("paid_via", paid)
@@ -1401,11 +1290,7 @@ async def run_list_entries_and_reply(update: Update, text: str):
     low = _norm(text or "")
     limit = 2000 if re.search(r"\b(completo|tudo|inteiro)\b", low) else 200
 
-    q = sb.table("entries").select("amount,type,entry_date,description,category_id,cost_center_id") \
-        .eq("account_id", account_id) \
-        .gte("entry_date", start).lt("entry_date", end) \
-        .order("entry_date", desc=True) \
-        .limit(limit)
+    q = sb.table("entries").select("amount,type,entry_date,description,category_id,cost_center_id").eq("account_id", account_id).gte("entry_date", start).lt("entry_date", end).order("entry_date", desc=True).limit(limit)
 
     if cc_code:
         cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
@@ -1428,9 +1313,9 @@ async def run_list_entries_and_reply(update: Update, text: str):
         return
 
     cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
-    ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
+    ccs_rows = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
     cats = {r["id"]: r["name"] for r in cats_rows}
-    ccs  = {r["id"]: r["code"] for r in ccs_rows}
+    ccs = {r["id"]: r["code"] for r in ccs_rows}
 
     receitas = sum(float(r["amount"]) for r in rows if r.get("type") == "income")
     despesas = sum(float(r["amount"]) for r in rows if r.get("type") == "expense")
@@ -1494,9 +1379,7 @@ async def run_balance_and_reply(update: Update, text: str):
     else:
         start, end, label = parse_period_pt(text)
 
-    base = sb.table("entries").select("amount,type,cost_center_id,entry_date") \
-        .eq("account_id", account_id) \
-        .gte("entry_date", start).lt("entry_date", end)
+    base = sb.table("entries").select("amount,type,cost_center_id,entry_date").eq("account_id", account_id).gte("entry_date", start).lt("entry_date", end)
 
     if cc_code:
         cc = sb.table("cost_centers").select("id").eq("account_id", account_id).eq("code", cc_code).limit(1).execute()
@@ -1509,10 +1392,7 @@ async def run_balance_and_reply(update: Update, text: str):
     despesas = sum(float(r["amount"]) for r in rows if r.get("type") == "expense")
     saldo = receitas - despesas
 
-    if is_company_balance_request(text):
-        filtro_txt = " | Empresa (geral)"
-    else:
-        filtro_txt = f" | {cc_code}" if cc_code else ""
+    filtro_txt = " | Empresa (geral)" if is_company_balance_request(text) else (f" | {cc_code}" if cc_code else "")
 
     msg = (
         f"💰 Saldo em {label}{filtro_txt}\n"
@@ -1550,12 +1430,7 @@ async def run_profit_and_reply(update: Update, text: str):
     cc_id = cc_rows[0]["id"]
 
     rows = get_or_none(
-        sb.table("entries")
-        .select("amount,type,category_id")
-        .eq("account_id", account_id)
-        .eq("cost_center_id", cc_id)
-        .gte("entry_date", start).lt("entry_date", end)
-        .execute()
+        sb.table("entries").select("amount,type,category_id").eq("account_id", account_id).eq("cost_center_id", cc_id).gte("entry_date", start).lt("entry_date", end).execute()
     ) or []
 
     if not rows:
@@ -1573,7 +1448,6 @@ async def run_profit_and_reply(update: Update, text: str):
 
     for r in rows:
         val = float(r["amount"])
-
         if r["type"] == "income":
             receitas += val
         else:
@@ -1587,21 +1461,17 @@ async def run_profit_and_reply(update: Update, text: str):
     msg = f"📊 DRE — {cc_code}\n\n"
     msg += "Receita total\n"
     msg += f"{moeda_fmt(receitas)}\n\n"
-
     msg += "Despesas\n"
     for k, v in sorted(cats.items(), key=lambda x: -x[1]):
         msg += f"{k}: {moeda_fmt(v)}\n"
-
     msg += "\nTotal despesas\n"
     msg += f"{moeda_fmt(despesas)}\n\n"
-
     msg += "💰 Lucro\n"
     msg += f"{moeda_fmt(lucro)}\n\n"
-
     msg += "Margem\n"
     msg += f"{margem:.1f}%\n\n"
-
     msg += "📌 Ranking de gastos\n"
+
     pos = 1
     for k, v in sorted(cats.items(), key=lambda x: -x[1]):
         msg += f"{pos}️⃣ {k}\n{moeda_fmt(v)}\n\n"
@@ -1625,12 +1495,7 @@ async def run_ranking_and_reply(update: Update, text: str):
         start, end, label = all_time_period_label()
 
     rows = get_or_none(
-        sb.table("entries")
-        .select("amount,category_id")
-        .eq("account_id", account_id)
-        .eq("type", "expense")
-        .gte("entry_date", start).lt("entry_date", end)
-        .execute()
+        sb.table("entries").select("amount,category_id").eq("account_id", account_id).eq("type", "expense").gte("entry_date", start).lt("entry_date", end).execute()
     ) or []
 
     if not rows:
@@ -1643,7 +1508,6 @@ async def run_ranking_and_reply(update: Update, text: str):
     cats_map = {r["id"]: r["name"] for r in cats_rows}
 
     cats = {}
-
     for r in rows:
         cat = cats_map.get(r.get("category_id"), "Outros")
         cats[cat] = cats.get(cat, 0.0) + float(r["amount"])
@@ -1651,7 +1515,6 @@ async def run_ranking_and_reply(update: Update, text: str):
     ordered = sorted(cats.items(), key=lambda x: -x[1])
 
     msg = f"📊 Ranking de gastos — {label}\n\n"
-
     pos = 1
     for cat, val in ordered:
         msg += f"{pos}️⃣ {cat}\n{moeda_fmt(val)}\n\n"
@@ -1686,12 +1549,7 @@ async def run_cc_full_summary(update: Update, text: str):
     cc_id = ccd[0]["id"]
 
     rows = get_or_none(
-        sb.table("entries")
-        .select("amount,type,category_id")
-        .eq("account_id", account_id)
-        .eq("cost_center_id", cc_id)
-        .gte("entry_date", start).lt("entry_date", end)
-        .execute()
+        sb.table("entries").select("amount,type,category_id").eq("account_id", account_id).eq("cost_center_id", cc_id).gte("entry_date", start).lt("entry_date", end).execute()
     ) or []
 
     if not rows:
@@ -1751,14 +1609,7 @@ async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None =
     cc_id = ccd[0]["id"]
 
     rows = get_or_none(
-        sb.table("entries")
-        .select("amount,type,category_id,entry_date,description")
-        .eq("account_id", account_id)
-        .eq("cost_center_id", cc_id)
-        .gte("entry_date", start).lt("entry_date", end)
-        .order("entry_date", desc=True)
-        .limit(2000)
-        .execute()
+        sb.table("entries").select("amount,type,category_id,entry_date,description").eq("account_id", account_id).eq("cost_center_id", cc_id).gte("entry_date", start).lt("entry_date", end).order("entry_date", desc=True).limit(2000).execute()
     ) or []
 
     if not rows:
@@ -1790,8 +1641,7 @@ async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None =
         icon = entry_emoji(r.get("type"))
         dt = data_fmt_out(r.get("entry_date"))
         cat_name = cats.get(r.get("category_id"), "Sem categoria")
-        desc = _clip(r.get("description") or "", 60)
-        last_lines.append(f"• {dt} {icon} {moeda_fmt(float(r['amount']))} — {cat_name}\n  {_clip(desc, 90)}")
+        last_lines.append(f"• {dt} {icon} {moeda_fmt(float(r['amount']))} — {cat_name}\n  {_clip(r.get('description') or '', 90)}")
 
     msg = (
         f"📒 Extrato — {cc_code}\n"
@@ -1852,12 +1702,10 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         low_text = _norm(user_text)
 
-        # DRE / LUCRO / MARGEM
         if "lucro" in low_text or "margem" in low_text or "dre" in low_text:
             await run_profit_and_reply(update, user_text)
             return
 
-        # RANKING
         if "ranking" in low_text:
             await run_ranking_and_reply(update, user_text)
             return
@@ -1928,7 +1776,7 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 "• recebi mil do container do Thiago\n"
                 "• paguei mil pra transportar o container da Ellen de munk\n"
                 "• saldo do container da Ellen em fevereiro\n"
-                "• saldo do container do Thiago   (vai pegar TODO o período)\n"
+                "• saldo do container do Thiago\n"
                 "• extrato do container do Thiago completo\n"
                 "• saldo da empresa este mês\n"
                 "• resumo do container do Thiago\n"
@@ -2053,19 +1901,17 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         resp = sb.table("entries").select(
             "amount,category_id,cost_center_id,type,entry_date"
-        ).eq("account_id", account_id) \
-         .gte("entry_date", month_start).lt("entry_date", month_end) \
-         .eq("type", "expense").execute()
+        ).eq("account_id", account_id).gte("entry_date", month_start).lt("entry_date", month_end).eq("type", "expense").execute()
 
         rows = get_or_none(resp) or []
 
         cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
-        ccs_rows  = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
+        ccs_rows = get_or_none(sb.table("cost_centers").select("id,code").eq("account_id", account_id).execute()) or []
         cats = {r["id"]: r["name"] for r in cats_rows}
-        ccs  = {r["id"]: r["code"] for r in ccs_rows}
+        ccs = {r["id"]: r["code"] for r in ccs_rows}
 
         by_cat = defaultdict(float)
-        by_cc  = defaultdict(float)
+        by_cc = defaultdict(float)
         total = 0.0
         for r in rows:
             v = float(r["amount"])
@@ -2113,7 +1959,6 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     low = _norm(raw)
-
     split_idx = None
     for mk in PERIOD_MARKERS:
         pos = low.find(mk)
@@ -2149,9 +1994,9 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Bloco/Setor: \"bloco A\" → `BLOCO_A`\n"
         "• Sede: \"sede\"/\"adm\" → `SEDE`\n\n"
         "✅ **Consultas**\n"
-        "• \"saldo do container do Thiago\" → pega **todo o período** (se não disser mês)\n"
+        "• \"saldo do container do Thiago\" → pega todo o período\n"
         "• \"saldo do container do Thiago em fevereiro\" → pega fevereiro\n"
-        "• \"extrato do container do Thiago\" → lista + resumo (receitas e despesas)\n"
+        "• \"extrato do container do Thiago\" → lista + resumo\n"
         "• \"extrato completo do container do Thiago\" → até 2000 itens\n"
         "• \"lucro do container do Thiago\"\n"
         "• \"margem da obra do Rodrigo\"\n"
@@ -2159,16 +2004,16 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• \"ranking de gastos\"\n"
         "• \"ranking de gastos em fevereiro\"\n\n"
         "✅ **Comandos**\n"
-        "• /start — cadastra/mostra teu id\n"
-        "• /autorizar <id> — (owner) autoriza usuário\n"
-        "• /obra <nome> — define CC do dia (OBRA)\n"
-        "• /despesa <texto> — força tratar como despesa\n"
-        "• /receita <texto> — força tratar como receita\n"
+        "• /start\n"
+        "• /autorizar <id>\n"
+        "• /obra <nome>\n"
+        "• /despesa <texto>\n"
+        "• /receita <texto>\n"
         "• /saldo [período]\n"
-        "• /relatorio — resumo do mês (despesas)\n"
-        "• /resumo — resumo da semana (despesas)\n"
-        "• /desfazer — apaga o último lançamento\n"
-        "• /categorias — lista categorias\n"
+        "• /relatorio\n"
+        "• /resumo\n"
+        "• /desfazer\n"
+        "• /categorias\n"
         "• /extrato_obra <nome> [período]\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -2208,7 +2053,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             text_out = ""
-
             try:
                 with open(local_path, "rb") as fh:
                     resp = oa_client.audio.transcriptions.create(
@@ -2217,7 +2061,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         language="pt"
                     )
                 text_out = (getattr(resp, "text", "") or "").strip()
-
             except Exception:
                 with open(local_path, "rb") as fh:
                     resp = oa_client.audio.transcriptions.create(
@@ -2226,7 +2069,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         language="pt"
                     )
                 text_out = (getattr(resp, "text", "") or "").strip()
-
         finally:
             try:
                 os.remove(local_path)
@@ -2245,3 +2087,64 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "timed out" in str(e).lower() or "timeout" in str(e).lower():
             msg += "\n\nDica: manda de novo um áudio mais curto (até ~10s) ou manda em texto."
         await update.message.reply_text(msg)
+
+# =====================================================================================
+#                               TELEGRAM APP
+# =====================================================================================
+
+tg_app: Application = ApplicationBuilder().token(TOKEN).build()
+
+tg_app.add_handler(CommandHandler("start", cmd_start))
+tg_app.add_handler(CommandHandler("autorizar", cmd_autorizar))
+tg_app.add_handler(CommandHandler("ajuda", cmd_ajuda))
+tg_app.add_handler(CommandHandler("obra", cmd_obra))
+tg_app.add_handler(CommandHandler("despesa", cmd_despesa))
+tg_app.add_handler(CommandHandler("receita", cmd_receita))
+tg_app.add_handler(CommandHandler("saldo", cmd_saldo))
+tg_app.add_handler(CommandHandler("relatorio", cmd_relatorio))
+tg_app.add_handler(CommandHandler("resumo", cmd_resumo))
+tg_app.add_handler(CommandHandler("desfazer", cmd_desfazer))
+tg_app.add_handler(CommandHandler("categorias", cmd_categorias))
+tg_app.add_handler(CommandHandler("extrato_obra", cmd_extrato_obra))
+
+tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
+tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
+
+@app.on_event("startup")
+async def on_startup():
+    global _KEEPALIVE_TASK
+    await tg_app.initialize()
+    await tg_app.start()
+    if _KEEPALIVE_TASK is None:
+        _KEEPALIVE_TASK = asyncio.create_task(_daily_keepalive_loop())
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        await tg_app.stop()
+        await tg_app.shutdown()
+    finally:
+        pass
+
+# =====================================================================================
+#                               FASTAPI ENDPOINTS
+# =====================================================================================
+
+class TgUpdate(BaseModel):
+    update_id: int | None = None
+
+@app.post("/webhook")
+async def webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, tg_app.bot)
+    await tg_app.process_update(update)
+    return {"ok": True}
+
+@app.get("/ping")
+async def ping():
+    ok = await _supabase_keepalive_once()
+    return {"ok": True, "supabase": "ok" if ok else "fail"}
+
+@app.get("/")
+def alive():
+    return {"boris": "ok"}
