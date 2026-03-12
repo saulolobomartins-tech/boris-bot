@@ -2208,6 +2208,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             text_out = ""
+
             try:
                 with open(local_path, "rb") as fh:
                     resp = oa_client.audio.transcriptions.create(
@@ -2216,6 +2217,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         language="pt"
                     )
                 text_out = (getattr(resp, "text", "") or "").strip()
+
             except Exception:
                 with open(local_path, "rb") as fh:
                     resp = oa_client.audio.transcriptions.create(
@@ -2224,8 +2226,22 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         language="pt"
                     )
                 text_out = (getattr(resp, "text", "") or "").strip()
-       finally:
+
+        finally:
             try:
                 os.remove(local_path)
             except Exception:
                 pass
+
+        if not text_out:
+            await update.message.reply_text("Não consegui entender o áudio.")
+            return
+
+        await update.message.reply_text(f"🗣️ Transcrito: “{text_out}”")
+        await process_user_text(update, context, text_out)
+
+    except Exception as e:
+        msg = f"💥 Erro no handle_audio: {type(e).__name__}: {e}"
+        if "timed out" in str(e).lower() or "timeout" in str(e).lower():
+            msg += "\n\nDica: manda de novo um áudio mais curto (até ~10s) ou manda em texto."
+        await update.message.reply_text(msg)
