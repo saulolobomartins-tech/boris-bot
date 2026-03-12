@@ -2224,6 +2224,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         language="pt"
                     )
                 text_out = (getattr(resp, "text", "") or "").strip()
-        finally:
+       finally:
             try:
-                os.remove(local
+                os.remove(local_path)
+            except Exception:
+                pass
