@@ -65,12 +65,14 @@ app = FastAPI()
 
 _KEEPALIVE_TASK = None
 
+
 async def _supabase_keepalive_once():
     try:
         sb.table("accounts").select("id").limit(1).execute()
         return True
     except Exception:
         return False
+
 
 async def _daily_keepalive_loop():
     await asyncio.sleep(10)
@@ -85,6 +87,7 @@ async def _daily_keepalive_loop():
 #                              NORMALIZAÇÃO / HELPERS
 # =====================================================================================
 
+
 def _norm(s: str) -> str:
     s = (s or "").lower().strip()
     s = unicodedata.normalize("NFD", s)
@@ -92,11 +95,14 @@ def _norm(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+
 def moeda_fmt(v: float) -> str:
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+
 def get_or_none(res):
     return res.data if hasattr(res, "data") else res
+
 
 def data_fmt_out(iso: str | None) -> str | None:
     if not iso:
@@ -107,11 +113,14 @@ def data_fmt_out(iso: str | None) -> str | None:
     except Exception:
         return iso
 
+
 def entry_emoji(etype: str | None) -> str:
     return "✅" if etype == "income" else "⛔"
 
+
 def entry_label(etype: str | None) -> str:
     return "Receita" if etype == "income" else "Despesa"
+
 
 def _clip(s: str, n: int = 40) -> str:
     s = (s or "").strip()
@@ -119,7 +128,9 @@ def _clip(s: str, n: int = 40) -> str:
         return s
     return s[:n - 1] + "…"
 
+
 TG_SAFE_CHUNK = 3600
+
 
 async def _send_long(update: Update, text: str):
     text = text or ""
@@ -143,6 +154,7 @@ async def _send_long(update: Update, text: str):
 # =====================================================================================
 
 _DEFAULT_ACCOUNT_ID = None
+
 
 def get_default_account_id() -> str:
     global _DEFAULT_ACCOUNT_ID
@@ -168,6 +180,7 @@ def get_default_account_id() -> str:
     _DEFAULT_ACCOUNT_ID = rows2[0]["id"]
     return _DEFAULT_ACCOUNT_ID
 
+
 def ensure_category_id(account_id: str, name: str) -> str | None:
     if not name:
         return None
@@ -187,6 +200,7 @@ def ensure_category_id(account_id: str, name: str) -> str | None:
         return rows2[0]["id"] if rows2 else None
     except Exception:
         return None
+
 
 def ensure_cost_center_id(account_id: str, code: str) -> str | None:
     if not code:
@@ -269,7 +283,6 @@ CATEGORY_RULES = [
     (r"\b(abastec|combust(iv|í)vel|diesel|gasolina|etanol|oleo|óleo|lubrificante|posto)\b", "Combustível"),
     (r"\b(eletric(a|o)?|fiao|fiacao|fio|disjuntor|quadro|tomad(a|as)|interruptor(es)?|spot|led|cabeamento|cabo\s*eletric)\b", "Elétrico"),
     (r"\b(hidraul(ic|i|ica|ico)|hidrossanit(a|á)ri(o|a)|encanamento|encanar|cano(s)?|tubo(s)?|tubo\s*pex|pvc\b|joelho|te\b|luva\b|registro|torneira|ralo|caixa\s*d'?agua|caixa\s*d'?água|esgoto|bomba|sifao|sifão)\b", "Hidráulico"),
-
     (r"\b(revestimento(s)?|forro(\s*pvc)?|dry\s*wall|drywall|gesso(\s+acartonado)?)\b", "Revestimentos"),
     (r"\b(pintur(a|ar)|tinta(s)?|massa\s*corrida|selador|lixa|rolo|fita\s*crepe|spray|textura|zarcao|zarc[aã]o)\b", "Pintura"),
     (r"\b(estrutura|fundacao|funda[cç][aã]o|sapata|broca|estaca|viga|pilar|laje|baldrame|concreto|cimento|areia|brita|argamassa|reboco|graute|bloco|tijolo|alvenaria|vergalh|arma[cç][aã]o|forma|escoramento|perfil|perfis|metalon|metalons)\b", "Estrutura/Alvenaria"),
@@ -277,11 +290,8 @@ CATEGORY_RULES = [
     (r"\b(telha|calha|rufo|cumeeira|zinco|manta\s*t[eé]rmica|termoac(o|ô)stic)\b", "Cobertura"),
     (r"\b(acabamento|piso|porcelanato|ceramica|cerâmica|rodape|rodapé|azulejo|pastilha|rejunte|argamassa\s*colante|granito|marmore|mármore|bancada|silicone|vedacao|vedação|massa\s*acrilica|massa\s*acrílica|massa\s*fina|box\b|espelho|lou(c|ç)a(s)?|metais|vaso\s+sanitario|vaso\s+sanitário|cuba\b|pia\b|acabamento\s+de\s+tomada|espelho\s+de\s+tomada)\b", "Acabamento"),
     (r"\b(impermeabiliza|manta\s*asf[aá]ltica|vedacit|sika)\b", "Impermeabilização"),
-
     (r"\b(parafuso|parafusos|prego|pregos|bucha|buchas|rebite|rebites|arruela|arruelas|porca|porcas|solda|eletrodo|eletrodos|arame\s*solda|disco|discos|disco\s*corte|disco\s*flap|lixa|lixas|abra[cç]adeira|enforca\s*gato|hellermann|silicone|cola|super\s*bonder|espuma\s*expansiva|vedante)\b", "Consumíveis"),
-
     (r"\b(analgesico|analg[eé]sico|dipirona|ibuprofeno|paracetamol|remedio|rem[eé]dios?|pomada|curativo|gaze|esparadrapo|bandagem|antisseptico|antiss[eé]ptico|protetor\s*solar|luva|luvas|oculos|[óo]culos|oculos\s*prote[cç][aã]o|[óo]culos\s*prote[cç][aã]o|capacete|protetor\s*auricular|mascara|m[aá]scara|respirador|bota|botina)\b", "SST"),
-
     (r"\b(parafus(o|os)|broca(s)?|eletrodo(s)?|disco\s*corte|abracadeira|abra[cç]adeira|chumbador|rebite|arruela|porca)\b", "Ferragens/Consumíveis"),
     (r"\b(esmerilhadeira|serra\s*circular|lixadeira|parafusadeira|multimetro|trena)\b", "Ferramentas"),
     (r"\b(bobcat|compactador|gerador|betoneira|aluguel\s*equip|loca[cç][aã]o\s*equip|plataforma|guindaste)\b", "Equipamentos"),
@@ -320,349 +330,33 @@ QUERY_INTENT_RE = re.compile(
 )
 
 SALDO_INTENT_RE = re.compile(r"\b(saldo(\s+atual)?|balanc(o|co)|balanco)\b", re.I)
-
-COMPANY_BALANCE_RE = re.compile(
-    r"\b("
-    r"saldo\s+da\s+empresa|"
-    r"saldo\s+geral|"
-    r"geral\s+da\s+empresa|"
-    r"empresa\s+no\s+geral|"
-    r"saldo\s+total"
-    r")\b",
-    re.I
-)
-
+COMPANY_BALANCE_RE = re.compile(r"\b(saldo\s+da\s+empresa|saldo\s+geral|geral\s+da\s+empresa|empresa\s+no\s+geral|saldo\s+total)\b", re.I)
 PROFIT_INTENT_RE = re.compile(r"\b(lucro|margem|dre)\b", re.I)
 RANKING_INTENT_RE = re.compile(r"\b(ranking)\b", re.I)
 
-PERIOD_MARKERS = [
-    "este mes", "essa semana", "semana passada", "mes passado",
-    "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
-    "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
-    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
-]
-DATE_RE = re.compile(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b")
+# =====================================================================================
+#                               PROCESSAMENTO ÚNICO (texto e áudio) - helpers de período
+# =====================================================================================
 
 def has_explicit_period(text: str) -> bool:
     low = _norm(text or "")
-    if DATE_RE.search(low):
+    date_re = re.compile(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b")
+    period_markers = [
+        "este mes", "essa semana", "semana passada", "mes passado",
+        "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
+        "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
+        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+    ]
+    if date_re.search(low):
         return True
-    for mk in PERIOD_MARKERS:
-        if mk in low:
-            return True
-    return False
+    return any(mk in low for mk in period_markers)
+
 
 def all_time_period_label():
     today = date.today()
     start = date(1900, 1, 1).isoformat()
     end = (today + timedelta(days=1)).isoformat()
     return start, end, "todo o período"
-
-# =====================================================================================
-#                               PARSE DE TEXTO
-# =====================================================================================
-
-def money_from_text(txt: str):
-    if not txt:
-        return None
-
-    original = txt
-    s = _norm(txt).replace("r$", "r$ ").strip()
-    s_wo_dates = re.sub(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b", " ", s)
-
-    candidates = list(re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s_wo_dates))
-    if candidates:
-        def to_float(token: str):
-            token = token.replace(".", "").replace(",", ".")
-            return float(token)
-
-        for m in candidates:
-            after = s_wo_dates[m.end(): m.end() + 12]
-            before = s_wo_dates[max(0, m.start() - 6): m.start()]
-            if re.search(r"\b(reais|real)\b", after) or "r$" in before:
-                try:
-                    return round(to_float(m.group(0)), 2)
-                except Exception:
-                    continue
-
-        last = candidates[-1]
-        try:
-            return round(to_float(last.group(0)), 2)
-        except Exception:
-            return None
-
-    low = _norm(original)
-
-    word_nums = {
-        "um": 1, "uma": 1,
-        "dois": 2, "duas": 2,
-        "tres": 3, "três": 3,
-        "quatro": 4,
-        "cinco": 5,
-        "seis": 6,
-        "sete": 7,
-        "oito": 8,
-        "nove": 9,
-        "dez": 10,
-        "quinze": 15,
-        "vinte": 20,
-        "trinta": 30,
-    }
-
-    m = re.search(r"\b(\d+)\s*mil\b", low)
-    if m:
-        try:
-            return float(int(m.group(1)) * 1000)
-        except Exception:
-            pass
-
-    m = re.search(r"\b([a-zçãõáéíóúâêîôû]+)\s*mil\b", low)
-    if m:
-        w = m.group(1)
-        n = word_nums.get(w)
-        if n:
-            return float(n * 1000)
-
-    if re.search(r"\bmil\b", low):
-        return 1000.0
-
-    return None
-
-def guess_payment(txt: str):
-    low = _norm(txt)
-    for label, pat in PAYMENT_SYNONYMS.items():
-        if re.search(pat, low):
-            return label
-    return None
-
-def guess_category(txt: str):
-    low = _norm(txt)
-    for pat, cat in CATEGORY_RULES:
-        if re.search(pat, low):
-            return cat
-    return DEFAULT_CATEGORY
-
-def _slugify_name(name: str) -> str:
-    s = _norm(name)
-    s = re.sub(r"[^a-z0-9]+", "", s).strip("")
-    return s.upper()
-
-def guess_cc(txt: str) -> str | None:
-    t = _norm(txt)
-
-    if re.search(r"\b(sede|administrativo|adm)\b", t):
-        return "SEDE"
-
-    m = re.search(r"\b(bloco|setor)\s+([a-f])\b", t)
-    if m:
-        return f"BLOCO_{m.group(2).upper()}"
-
-    m = re.search(r"\b(bloco|setor)\s+([1-6])\b", t)
-    if m:
-        num = int(m.group(2))
-        letter = "ABCDEF"[num - 1]
-        return f"BLOCO_{letter}"
-
-    m = re.search(r"\b(blo(co)?_[a-f])\b", t)
-    if m:
-        return m.group(1).upper()
-
-    m = re.search(r"\b(?:do|da|de|no|na)?\s*container\s+(?:do|da|de)?\s*([a-z0-9][a-z0-9\s\-_.]+)\b", t)
-    if m:
-        nome = m.group(1).strip()
-        nome = re.split(
-            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato|lucro|margem|dre|ranking)\b",
-            nome
-        )[0].strip()
-        if nome:
-            return f"CONTAINER_{_slugify_name(nome)}"
-
-    m = re.search(r"\b(?:na|no)?\s*(obra|reforma)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
-    if m:
-        tipo = m.group(1)
-        nome = m.group(2).strip()
-        nome = re.split(
-            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato|lucro|margem|dre|ranking)\b",
-            nome
-        )[0].strip()
-        if nome:
-            return f"{tipo.upper()}_{_slugify_name(nome)}"
-
-    return None
-
-def guess_cc_from_reply(txt: str) -> str | None:
-    t = _norm(txt)
-    cc = guess_cc(t)
-    if cc:
-        return cc
-
-    if re.fullmatch(r"[a-f]", t):
-        return f"BLOCO_{t.upper()}"
-
-    if re.fullmatch(r"[1-6]", t):
-        letter = "ABCDEF"[int(t) - 1]
-        return f"BLOCO_{letter}"
-
-    m = re.fullmatch(r"container\s+(.+)", t)
-    if m:
-        nome = m.group(1).strip()
-        if nome:
-            return f"CONTAINER_{_slugify_name(nome)}"
-
-    if len(t) <= 40 and re.fullmatch(r"[a-z0-9][a-z0-9\s._-]*", t):
-        return f"OBRA_{_slugify_name(t)}"
-
-    return None
-
-def guess_cc_strict_for_correction(txt: str) -> str | None:
-    return guess_cc(txt)
-
-def parse_date_pt(txt: str) -> str | None:
-    t = _norm(txt)
-    today = date.today()
-
-    if "hoje" in t:
-        return today.isoformat()
-    if "ontem" in t:
-        return (today - timedelta(days=1)).isoformat()
-    if "anteontem" in t:
-        return (today - timedelta(days=2)).isoformat()
-    if "amanha" in t:
-        return (today + timedelta(days=1)).isoformat()
-
-    m = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b", t)
-    if m:
-        d = int(m.group(1))
-        mo = int(m.group(2))
-        y_raw = m.group(3)
-        y = int(y_raw) if y_raw else today.year
-        if y < 100:
-            y += 2000
-        try:
-            return date(y, mo, d).isoformat()
-        except Exception:
-            return None
-
-    months = {
-        "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
-        "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
-        "novembro": 11, "dezembro": 12
-    }
-    m2 = re.search(
-        r"\b(\d{1,2})\s*(?:de\s*)?(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(?:de\s*)?(\d{4})?\b",
-        t
-    )
-    if m2:
-        d = int(m2.group(1))
-        mo = months.get(m2.group(2))
-        y = int(m2.group(3)) if m2.group(3) else today.year
-        try:
-            return date(y, mo, d).isoformat()
-        except Exception:
-            return None
-
-    return None
-
-def _first_day_of_week(d: date):
-    return d - timedelta(days=d.weekday())
-
-def _last_day_of_week(d: date):
-    return _first_day_of_week(d) + timedelta(days=7)
-
-def parse_period_pt(text: str):
-    low = _norm(text)
-    today = date.today()
-
-    NUM_WORDS = {
-        "um": 1, "uma": 1,
-        "dois": 2, "duas": 2,
-        "tres": 3, "três": 3,
-        "quatro": 4,
-        "cinco": 5,
-        "seis": 6,
-        "sete": 7,
-        "oito": 8,
-        "nove": 9,
-        "dez": 10,
-        "quinze": 15,
-        "vinte": 20,
-        "trinta": 30
-    }
-
-    def word_to_number(w):
-        return NUM_WORDS.get(w)
-
-    month_map = {
-        "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
-        "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
-        "novembro": 11, "dezembro": 12
-    }
-
-    mmo = re.search(
-        r"\b(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b(?:\s*(?:de\s*)?(\d{4}))?",
-        low
-    )
-    if mmo:
-        mon_name = mmo.group(1)
-        mon = month_map.get(mon_name)
-        year = int(mmo.group(2)) if mmo.group(2) else today.year
-        if mon:
-            s = date(year, mon, 1)
-            e = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
-            label = f"{mon_name}{' ' + str(year) if mmo.group(2) else ''}"
-            return s.isoformat(), e.isoformat(), label
-
-    if re.search(r"\b(ultima|última)\s+quinzena\b", low):
-        s = today - timedelta(days=15)
-        e = today + timedelta(days=1)
-        return s.isoformat(), e.isoformat(), "última quinzena"
-
-    m = re.search(r"\b(ultim[oa]s?|nos?\s+ultim[oa]s?)\s+(\d{1,3})\s+dias?\b", low)
-    if m:
-        n = int(m.group(2))
-        s = today - timedelta(days=n)
-        e = today + timedelta(days=1)
-        return s.isoformat(), e.isoformat(), f"últimos {n} dias"
-
-    m = re.search(r"\b(ultim[oa]s?)\s+([a-zçãõ]+)\s+dias?\b", low)
-    if m:
-        n = word_to_number(m.group(2))
-        if n:
-            s = today - timedelta(days=n)
-            e = today + timedelta(days=1)
-            return s.isoformat(), e.isoformat(), f"últimos {n} dias"
-
-    if re.search(r"\b(essa|nesta|nessa|esta|dessa)\s+semana\b", low):
-        s = _first_day_of_week(today)
-        e = _last_day_of_week(today)
-        return s.isoformat(), e.isoformat(), "essa semana"
-
-    if re.search(r"\bsemana\s+passada\b", low):
-        e = _first_day_of_week(today)
-        s = e - timedelta(days=7)
-        return s.isoformat(), e.isoformat(), "semana passada"
-
-    if re.search(r"\b(esse|este|nesse|neste|desse)\s+m[eê]s\b", low):
-        s = today.replace(day=1)
-        e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
-        return s.isoformat(), e.isoformat(), "este mês"
-
-    if re.search(r"\bm[eê]s\s+passado\b", low):
-        s_atual = today.replace(day=1)
-        e_passado = s_atual
-        s_passado = (s_atual - timedelta(days=1)).replace(day=1)
-        return s_passado.isoformat(), e_passado.isoformat(), "mês passado"
-
-    if re.search(r"\bhoje\b", low):
-        return today.isoformat(), (today + timedelta(days=1)).isoformat(), "hoje"
-
-    if re.search(r"\bontem\b", low):
-        y = today - timedelta(days=1)
-        return y.isoformat(), today.isoformat(), "ontem"
-
-    s = today.replace(day=1)
-    e = (s.replace(day=28) + timedelta(days=4)).replace(day=1)
-    return s.isoformat(), e.isoformat(), "este mês (padrão)"
 
 # =====================================================================================
 #                          FILTROS / INTENTS (CONSULTAS)
@@ -675,6 +369,7 @@ def guess_category_filter(text: str):
             return name
     return None
 
+
 def guess_paid_filter(text: str):
     low = _norm(text)
     for label, pat in PAYMENT_SYNONYMS.items():
@@ -682,20 +377,26 @@ def guess_paid_filter(text: str):
             return label
     return None
 
+
 def guess_cc_filter(text: str):
     return guess_cc(text)
+
 
 def is_company_balance_request(text: str) -> bool:
     return bool(COMPANY_BALANCE_RE.search(text or ""))
 
+
 EXPENSE_HINT_RE = re.compile(r"\b(despesa|despesas|gasto|gastei|paguei|comprei|saida|saída)\b", re.I)
+
 
 def is_income_query(text: str):
     t = _norm(text or "")
     return bool(re.search(
         r"\b(entrou|entrada(s)?|recebi|receber|recebido|recebida|receita(s)?|pagaram|pagamento(s)?|quanto\s+(ja\s+)?recebi|quanto\s+entrou|total\s+recebido|pix\s+recebid[oa])\b",
-        t, re.I
+        t,
+        re.I
     ))
+
 
 def detect_type_filter(text: str) -> str | None:
     t = _norm(text or "")
@@ -709,22 +410,28 @@ def detect_type_filter(text: str) -> str | None:
         return None
     return "expense"
 
+
 def is_report_intent(text: str):
     return bool(QUERY_INTENT_RE.search(text or ""))
 
+
 def is_saldo_intent(text: str):
     return bool(SALDO_INTENT_RE.search(text or ""))
+
 
 def is_summary_request(text: str):
     t = _norm(text or "")
     return bool(re.search(r"\b(resumo|relatorio|relatório)\b", t))
 
+
 def is_list_request(text: str):
     t = _norm(text or "")
     return bool(re.search(r"\b(lista|detalha|detalhar|itens?|lan[cç]amentos?|extrato)\b", t))
 
+
 def is_profit_request(text: str):
     return bool(PROFIT_INTENT_RE.search(text or ""))
+
 
 def is_ranking_request(text: str):
     return bool(RANKING_INTENT_RE.search(text or ""))
@@ -736,10 +443,12 @@ def is_ranking_request(text: str):
 PENDING_BY_USER: dict[int, dict] = {}
 LAST_ENTRY_BY_TG_USER: dict[int, dict] = {}
 
+
 def _get_user_row(tg_user_id: int) -> dict | None:
     r = sb.table("users").select("id,role,is_active,account_id,last_cc").eq("tg_user_id", tg_user_id).limit(1).execute()
     rows = get_or_none(r) or []
     return rows[0] if rows else None
+
 
 def _get_last_cc(tg_user_id: int) -> str | None:
     try:
@@ -751,11 +460,13 @@ def _get_last_cc(tg_user_id: int) -> str | None:
         pass
     return None
 
+
 def _set_last_cc(tg_user_id: int, cc_code: str):
     try:
         sb.table("users").update({"last_cc": cc_code}).eq("tg_user_id", tg_user_id).execute()
     except Exception:
         pass
+
 
 def _get_last_entry_id_from_db(tg_user_id: int) -> int | None:
     try:
@@ -769,6 +480,7 @@ def _get_last_entry_id_from_db(tg_user_id: int) -> int | None:
     except Exception:
         pass
     return None
+
 
 def _set_last_entry_id_to_db(tg_user_id: int, entry_id: int | None):
     try:
@@ -795,6 +507,7 @@ def is_correction_intent(text: str) -> bool:
         r"\b(corrig(e|ir|e ai)|ajusta(r|a)|editar|edita|troca(r)?|muda(r)?|mudar\b|nao\s+e|não\s+é|na\s+verdade|o\s+certo\s+e|era\s+.*\s+mas\s+e)\b",
         t_norm
     ))
+
 
 def extract_correction_targets(text: str) -> dict:
     t = _norm(text or "")
@@ -825,6 +538,7 @@ def extract_correction_targets(text: str) -> dict:
         "type": typ,
         "amount": new_amount
     }
+
 
 def _resolve_last_entry_for_user(account_id: str, user_id: int, tg_uid: int) -> dict | None:
     db_id = _get_last_entry_id_from_db(tg_uid)
@@ -864,6 +578,7 @@ def _resolve_last_entry_for_user(account_id: str, user_id: int, tg_uid: int) -> 
         return rows[0] if rows else None
     except Exception:
         return None
+
 
 async def try_apply_correction(update: Update, text: str) -> bool:
     tg_uid = update.effective_user.id
@@ -1117,6 +832,7 @@ async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /resumo: {type(e).__name__}: {e}")
 
+
 async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         tg_uid = update.effective_user.id
@@ -1196,11 +912,13 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /desfazer: {type(e).__name__}: {e}")
 
+
 def _fmt_ranked(d: dict[str, float], limit: int | None = None) -> str:
     items = sorted(d.items(), key=lambda x: x[1], reverse=True)
     if limit:
         items = items[:limit]
     return "\n".join([f"• {k}: {moeda_fmt(v)}" for k, v in items]) or "• (sem lançamentos)"
+
 
 async def run_query_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -1269,6 +987,7 @@ async def run_query_and_reply(update: Update, text: str):
         )
 
     await update.message.reply_text(msg)
+
 
 async def run_list_entries_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -1365,6 +1084,7 @@ async def run_list_entries_and_reply(update: Update, text: str):
 
     await _send_long(update, msg)
 
+
 async def run_balance_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
@@ -1403,6 +1123,7 @@ async def run_balance_and_reply(update: Update, text: str):
     )
     await update.message.reply_text(msg)
 
+
 async def run_profit_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
@@ -1437,9 +1158,7 @@ async def run_profit_and_reply(update: Update, text: str):
         await update.message.reply_text(f"Sem lançamentos para {cc_code} em {label}.")
         return
 
-    cats_rows = get_or_none(
-        sb.table("categories").select("id,name").eq("account_id", account_id).execute()
-    ) or []
+    cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
     cats_map = {r["id"]: r["name"] for r in cats_rows}
 
     receitas = 0.0
@@ -1481,6 +1200,7 @@ async def run_profit_and_reply(update: Update, text: str):
 
     await _send_long(update, msg.strip())
 
+
 async def run_ranking_and_reply(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
     if not user_row or not user_row.get("is_active"):
@@ -1502,9 +1222,7 @@ async def run_ranking_and_reply(update: Update, text: str):
         await update.message.reply_text("Sem despesas registradas.")
         return
 
-    cats_rows = get_or_none(
-        sb.table("categories").select("id,name").eq("account_id", account_id).execute()
-    ) or []
+    cats_rows = get_or_none(sb.table("categories").select("id,name").eq("account_id", account_id).execute()) or []
     cats_map = {r["id"]: r["name"] for r in cats_rows}
 
     cats = {}
@@ -1523,6 +1241,7 @@ async def run_ranking_and_reply(update: Update, text: str):
             break
 
     await _send_long(update, msg.strip())
+
 
 async def run_cc_full_summary(update: Update, text: str):
     user_row = _get_user_row(update.effective_user.id)
@@ -1587,6 +1306,7 @@ async def run_cc_full_summary(update: Update, text: str):
         f"Receitas por categoria:\n{_fmt_ranked(by_cat_inc, limit=10)}"
     )
     await _send_long(update, msg)
+
 
 async def run_cc_extrato(update: Update, cc_code: str, period_text: str | None = None):
     user_row = _get_user_row(update.effective_user.id)
@@ -1667,7 +1387,14 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if not user_text:
             return
 
+        user_row = _get_user_row(uid)
+
         if uid in PENDING_BY_USER:
+            if not user_row or not user_row.get("is_active"):
+                PENDING_BY_USER.pop(uid, None)
+                await update.message.reply_text("⚠️ Usuário não autorizado. Use /start e peça autorização.")
+                return
+
             cc = guess_cc_from_reply(user_text)
             if cc:
                 pending = PENDING_BY_USER.pop(uid)
@@ -1728,6 +1455,10 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         cc_only = guess_cc(user_text)
         if cc_only and money_from_text(user_text) is None and not is_report_intent(user_text) and not is_saldo_intent(user_text):
+            if not user_row or not user_row.get("is_active"):
+                await update.message.reply_text("⚠️ Usuário não autorizado. Use /start e peça autorização.")
+                return
+
             _set_last_cc(uid, cc_only)
             await update.message.reply_text(f"✅ Centro de custo atual definido:\n{cc_only}")
             return
@@ -1736,6 +1467,10 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         last_cc = _get_last_cc(uid)
 
         if (not cc_in_text) and (not last_cc) and money_from_text(user_text) is not None:
+            if not user_row or not user_row.get("is_active"):
+                await update.message.reply_text("⚠️ Usuário não autorizado. Use /start e peça autorização.")
+                return
+
             PENDING_BY_USER[uid] = {"txt": user_text}
             await update.message.reply_text(
                 "Beleza. Só me diz qual centro de custo pra eu lançar certinho.\n"
@@ -1801,39 +1536,46 @@ async def process_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 # =====================================================================================
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    default_account_id = get_default_account_id()
+    try:
+        u = update.effective_user
+        default_account_id = get_default_account_id()
 
-    exist = sb.table("users").select("*").eq("tg_user_id", u.id).execute()
-    data = get_or_none(exist) or []
+        exist = sb.table("users").select("*").eq("tg_user_id", u.id).limit(1).execute()
+        data = get_or_none(exist) or []
 
-    if not data:
-        sb.table("users").insert({
-            "tg_user_id": u.id,
-            "name": u.full_name,
-            "role": "viewer",
-            "is_active": False,
-            "account_id": default_account_id,
-            "last_cc": None
-        }).execute()
-    else:
-        upd = {}
-        if not data[0].get("account_id"):
-            upd["account_id"] = default_account_id
-        if "last_cc" not in data[0]:
-            upd["last_cc"] = None
-        if upd:
-            try:
+        if not data:
+            sb.table("users").insert({
+                "tg_user_id": u.id,
+                "name": u.full_name,
+                "role": "viewer",
+                "is_active": False,
+                "account_id": default_account_id,
+                "last_cc": None
+            }).execute()
+        else:
+            upd = {
+                "name": data[0].get("name") or u.full_name
+            }
+
+            if not data[0].get("account_id"):
+                upd["account_id"] = default_account_id
+
+            if "last_cc" not in data[0]:
+                upd["last_cc"] = None
+
+            if upd:
                 sb.table("users").update(upd).eq("tg_user_id", u.id).execute()
-            except Exception:
-                pass
 
-    await update.message.reply_text(
-        f"Fala, {u.first_name}! Eu sou o Boris.\n"
-        f"Teu Telegram user id é: {u.id}\n"
-        f"Pede pro owner te autorizar com /autorizar {u.id}\n"
-        f"Comandos: /ajuda"
-    )
+        await update.message.reply_text(
+            f"Fala, {u.first_name}! Eu sou o Boris.\n"
+            f"Teu Telegram user id é: {u.id}\n"
+            f"Pede pro owner te autorizar com /autorizar {u.id}\n"
+            f"Comandos: /ajuda"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"💥 Erro no /start: {type(e).__name__}: {e}")
+
 
 async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
@@ -1860,6 +1602,7 @@ async def cmd_autorizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Usuário {target} autorizado ✅")
 
+
 async def cmd_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = " ".join(context.args).strip()
     if not name:
@@ -1869,12 +1612,14 @@ async def cmd_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _set_last_cc(update.effective_user.id, cc)
     await update.message.reply_text(f"✅ Centro de custo atual definido:\n{cc}")
 
+
 async def cmd_despesa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args).strip()
     if not txt:
         await update.message.reply_text("Uso: /despesa <texto>. Ex: /despesa 200 eletricista pix bloco A")
         return
     await process_user_text(update, context, txt)
+
 
 async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args).strip()
@@ -1883,9 +1628,11 @@ async def cmd_receita(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await process_user_text(update, context, "recebi " + txt)
 
+
 async def cmd_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = " ".join(context.args).strip()
     await run_balance_and_reply(update, txt or "este mês")
+
 
 async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1930,6 +1677,7 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /relatorio: {type(e).__name__}: {e}")
 
+
 async def cmd_categorias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_row = _get_user_row(update.effective_user.id)
@@ -1952,15 +1700,23 @@ async def cmd_categorias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"💥 Erro no /categorias: {type(e).__name__}: {e}")
 
+
 async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = " ".join(context.args).strip()
     if not raw:
         await update.message.reply_text("Uso: /extrato_obra <nome> [período]. Ex: /extrato_obra João fevereiro")
         return
 
+    period_markers = [
+        "este mes", "essa semana", "semana passada", "mes passado",
+        "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
+        "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
+        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+    ]
+
     low = _norm(raw)
     split_idx = None
-    for mk in PERIOD_MARKERS:
+    for mk in period_markers:
         pos = low.find(mk)
         if pos != -1:
             split_idx = pos
@@ -1979,6 +1735,7 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cc = f"OBRA_{_slugify_name(name)}"
     await run_cc_extrato(update, cc, period_txt)
+
 
 async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -2018,8 +1775,10 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_user_text(update, context, update.message.text or "")
+
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not oa_client:
@@ -2110,6 +1869,7 @@ tg_app.add_handler(CommandHandler("extrato_obra", cmd_extrato_obra))
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, plain_text))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
+
 @app.on_event("startup")
 async def on_startup():
     global _KEEPALIVE_TASK
@@ -2117,6 +1877,7 @@ async def on_startup():
     await tg_app.start()
     if _KEEPALIVE_TASK is None:
         _KEEPALIVE_TASK = asyncio.create_task(_daily_keepalive_loop())
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -2133,6 +1894,7 @@ async def on_shutdown():
 class TgUpdate(BaseModel):
     update_id: int | None = None
 
+
 @app.post("/webhook")
 async def webhook(req: Request):
     data = await req.json()
@@ -2140,10 +1902,12 @@ async def webhook(req: Request):
     await tg_app.process_update(update)
     return {"ok": True}
 
+
 @app.get("/ping")
 async def ping():
     ok = await _supabase_keepalive_once()
     return {"ok": True, "supabase": "ok" if ok else "fail"}
+
 
 @app.get("/")
 def alive():
