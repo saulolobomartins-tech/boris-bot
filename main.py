@@ -335,21 +335,236 @@ PROFIT_INTENT_RE = re.compile(r"\b(lucro|margem|dre)\b", re.I)
 RANKING_INTENT_RE = re.compile(r"\b(ranking)\b", re.I)
 
 # =====================================================================================
-#                               PROCESSAMENTO ÚNICO (texto e áudio) - helpers de período
+#                       HELPERS DE PARSE (VALOR, DATA, CC, PERÍODO)
 # =====================================================================================
+
+PERIOD_MARKERS = [
+    "este mes", "essa semana", "semana passada", "mes passado",
+    "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
+    "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+]
+
+
+def _slugify_name(name: str) -> str:
+    s = _norm(name)
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s.upper()
+
+
+def money_from_text(txt: str) -> float | None:
+    if not txt:
+        return None
+
+    original = txt
+    s = _norm(txt).replace("r$", "r$ ").strip()
+    s_wo_dates = re.sub(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b", " ", s)
+
+    candidates = list(re.finditer(r"(-?\d{1,3}(?:\.\d{3})+|-?\d+)(?:,\d{2})?", s_wo_dates))
+    if candidates:
+        def to_float(token: str):
+            token = token.replace(".", "").replace(",", ".")
+            return float(token)
+
+        for m in candidates:
+            after = s_wo_dates[m.end(): m.end() + 12]
+            before = s_wo_dates[max(0, m.start() - 6): m.start()]
+            if re.search(r"\b(reais|real)\b", after) or "r$" in before:
+                try:
+                    return round(to_float(m.group(0)), 2)
+                except Exception:
+                    continue
+
+        last = candidates[-1]
+        try:
+            return round(to_float(last.group(0)), 2)
+        except Exception:
+            return None
+
+    low = _norm(original)
+
+    word_nums = {
+        "um": 1, "uma": 1,
+        "dois": 2, "duas": 2,
+        "tres": 3, "três": 3,
+        "quatro": 4,
+        "cinco": 5,
+        "seis": 6,
+        "sete": 7,
+        "oito": 8,
+        "nove": 9,
+        "dez": 10,
+        "quinze": 15,
+        "vinte": 20,
+        "trinta": 30,
+    }
+
+    m = re.search(r"\b(\d+)\s*mil\b", low)
+    if m:
+        try:
+            return float(int(m.group(1)) * 1000)
+        except Exception:
+            pass
+
+    m = re.search(r"\b([a-zçãõáéíóúâêîôû]+)\s*mil\b", low)
+    if m:
+        w = m.group(1)
+        n = word_nums.get(w)
+        if n:
+            return float(n * 1000)
+
+    if re.search(r"\bmil\b", low):
+        return 1000.0
+
+    return None
+
+
+def guess_payment(text: str):
+    low = _norm(text)
+    for label, pat in PAYMENT_SYNONYMS.items():
+        if re.search(pat, low):
+            return label
+    return None
+
+
+def guess_category(text: str):
+    low = _norm(text)
+    for pat, name in CATEGORY_RULES:
+        if re.search(pat, low):
+            return name
+    return DEFAULT_CATEGORY
+
+
+def guess_cc(text: str) -> str | None:
+    t = _norm(text)
+
+    if re.search(r"\b(sede|adm|administrativo)\b", t):
+        return "SEDE"
+
+    m = re.search(r"\b(bloco|setor)\s+([a-f])\b", t)
+    if m:
+        return f"BLOCO_{m.group(2).upper()}"
+
+    m = re.search(r"\b(bloco|setor)\s+([1-6])\b", t)
+    if m:
+        num = int(m.group(2))
+        letter = "ABCDEF"[num - 1]
+        return f"BLOCO_{letter}"
+
+    m = re.search(r"\b(blo(co)?_[a-f])\b", t)
+    if m:
+        return m.group(1).upper()
+
+    m = re.search(r"\b(?:do|da|de|no|na)?\s*container\s+(?:do|da|de)?\s*([a-z0-9][a-z0-9\s\-_.]+)\b", t)
+    if m:
+        nome = m.group(1).strip()
+        nome = re.split(
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato|lucro|margem|dre|ranking)\b",
+            nome
+        )[0].strip()
+        if nome:
+            return f"CONTAINER_{_slugify_name(nome)}"
+
+    m = re.search(r"\b(?:na|no)?\s*(obra|reforma)\s+(?:do|da|de)?\s+([a-z0-9][a-z0-9\s\-_.]+)\b", t)
+    if m:
+        tipo = m.group(1)
+        nome = m.group(2).strip()
+        nome = re.split(
+            r"\b(por|pra|pro|no|na|em|para|paguei|gastei|comprei|recebi|pix|credito|crédito|debito|débito|cartao|cartão|saldo|relatorio|relatório|resumo|quanto|lista|detalha|extrato|lucro|margem|dre|ranking)\b",
+            nome
+        )[0].strip()
+        if nome:
+            return f"{tipo.upper()}_{_slugify_name(nome)}"
+
+    return None
+
+
+def guess_cc_from_reply(text: str) -> str | None:
+    t = _norm(text)
+    cc = guess_cc(t)
+    if cc:
+        return cc
+
+    if re.fullmatch(r"[a-f]", t):
+        return f"BLOCO_{t.upper()}"
+
+    if re.fullmatch(r"[1-6]", t):
+        letter = "ABCDEF"[int(t) - 1]
+        return f"BLOCO_{letter}"
+
+    m = re.fullmatch(r"container\s+(.+)", t)
+    if m:
+        nome = m.group(1).strip()
+        if nome:
+            return f"CONTAINER_{_slugify_name(nome)}"
+
+    if len(t) <= 40 and re.fullmatch(r"[a-z0-9][a-z0-9\s._-]*", t):
+        return f"OBRA_{_slugify_name(t)}"
+
+    return None
+
+
+def guess_cc_strict_for_correction(text: str) -> str | None:
+    return guess_cc(text)
+
+
+def parse_date_pt(text: str):
+    t = _norm(text)
+    today = datetime.date.today()
+
+    if "ontem" in t:
+        return (today - timedelta(days=1)).isoformat()
+
+    if "hoje" in t:
+        return today.isoformat()
+
+    m = re.search(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b", t)
+    if m:
+        d = int(m.group(1))
+        mth = int(m.group(2))
+        y = int(m.group(3)) if m.group(3) else today.year
+        if y < 100:
+            y += 2000
+        try:
+            return datetime.date(y, mth, d).isoformat()
+        except Exception:
+            return None
+
+    months = {
+        "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
+        "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
+        "novembro": 11, "dezembro": 12
+    }
+    m2 = re.search(
+        r"\b(\d{1,2})\s*(?:de\s*)?(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(?:de\s*)?(\d{4})?\b",
+        t
+    )
+    if m2:
+        d = int(m2.group(1))
+        mo = months.get(m2.group(2))
+        y = int(m2.group(3)) if m2.group(3) else today.year
+        try:
+            return datetime.date(y, mo, d).isoformat()
+        except Exception:
+            return None
+
+    return None
+
+
+def _first_day_of_week(d: datetime.date):
+    return d - timedelta(days=d.weekday())
+
+
+def _last_day_of_week(d: datetime.date):
+    return _first_day_of_week(d) + timedelta(days=7)
+
 
 def has_explicit_period(text: str) -> bool:
     low = _norm(text or "")
     date_re = re.compile(r"\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b")
-    period_markers = [
-        "este mes", "essa semana", "semana passada", "mes passado",
-        "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
-        "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
-        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
-    ]
     if date_re.search(low):
         return True
-    return any(mk in low for mk in period_markers)
+    return any(mk in low for mk in PERIOD_MARKERS)
 
 
 def all_time_period_label():
@@ -357,6 +572,64 @@ def all_time_period_label():
     start = date(1900, 1, 1).isoformat()
     end = (today + timedelta(days=1)).isoformat()
     return start, end, "todo o período"
+
+
+def parse_period_pt(text: str):
+    today = datetime.date.today()
+    t = _norm(text)
+
+    if "semana passada" in t:
+        start = today - timedelta(days=today.weekday() + 7)
+        end = start + timedelta(days=7)
+        return start.isoformat(), end.isoformat(), "semana passada"
+
+    if "essa semana" in t or "esta semana" in t:
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=7)
+        return start.isoformat(), end.isoformat(), "essa semana"
+
+    if "mes passado" in t or "mês passado" in t:
+        first = today.replace(day=1)
+        last_month = first - timedelta(days=1)
+        start = last_month.replace(day=1)
+        end = first
+        return start.isoformat(), end.isoformat(), "mês passado"
+
+    mmo = re.search(
+        r"\b(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b(?:\s*(?:de\s*)?(\d{4}))?",
+        t
+    )
+    if mmo:
+        month_map = {
+            "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4, "maio": 5,
+            "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
+            "novembro": 11, "dezembro": 12
+        }
+        mon_name = mmo.group(1)
+        mon = month_map.get(mon_name)
+        year = int(mmo.group(2)) if mmo.group(2) else today.year
+        if mon:
+            s = datetime.date(year, mon, 1)
+            e = datetime.date(year + 1, 1, 1) if mon == 12 else datetime.date(year, mon + 1, 1)
+            label = f"{mon_name}{' ' + str(year) if mmo.group(2) else ''}"
+            return s.isoformat(), e.isoformat(), label
+
+    if "hoje" in t:
+        start = today
+        end = today + timedelta(days=1)
+        return start.isoformat(), end.isoformat(), "hoje"
+
+    if "ontem" in t:
+        start = today - timedelta(days=1)
+        end = today
+        return start.isoformat(), end.isoformat(), "ontem"
+
+    if "este mes" in t or "esse mes" in t or "este mês" in t or "esse mês" in t:
+        start = today.replace(day=1)
+        end = (start + timedelta(days=32)).replace(day=1)
+        return start.isoformat(), end.isoformat(), "este mês"
+
+    return all_time_period_label()
 
 # =====================================================================================
 #                          FILTROS / INTENTS (CONSULTAS)
@@ -1049,7 +1322,6 @@ async def run_list_entries_and_reply(update: Update, text: str):
         dt = data_fmt_out(r.get("entry_date"))
         cat_name = cats.get(r.get("category_id"), "Sem categoria")
         cc_name = ccs.get(r.get("cost_center_id"), "Sem CC")
-        desc = _clip(r.get("description") or "", 60)
 
         if r.get("type") == "income":
             by_cat_inc[cat_name] += v
@@ -1058,7 +1330,7 @@ async def run_list_entries_and_reply(update: Update, text: str):
             by_cat_exp[cat_name] += v
             icon = "⛔"
 
-        lines.append(f"• {dt} {icon} {moeda_fmt(v)} — {cat_name} — {cc_name}\n  {_clip(desc, 90)}")
+        lines.append(f"• {dt} {icon} {moeda_fmt(v)} — {cat_name} — {cc_name}\n  {_clip(r.get('description') or '', 90)}")
 
     header = f"📄 Extrato (lista) — {label}"
     if cc_code:
@@ -1707,16 +1979,9 @@ async def cmd_extrato_obra(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /extrato_obra <nome> [período]. Ex: /extrato_obra João fevereiro")
         return
 
-    period_markers = [
-        "este mes", "essa semana", "semana passada", "mes passado",
-        "ultimos", "últimos", "hoje", "ontem", "ultima quinzena", "última quinzena",
-        "janeiro", "fevereiro", "marco", "março", "abril", "maio", "junho",
-        "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
-    ]
-
     low = _norm(raw)
     split_idx = None
-    for mk in period_markers:
+    for mk in PERIOD_MARKERS:
         pos = low.find(mk)
         if pos != -1:
             split_idx = pos
